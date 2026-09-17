@@ -102,7 +102,9 @@ export default function (pi: ExtensionAPI) {
 		if (prevId) unregister(prevId);
 
 		myId = ctx.sessionManager.getSessionId();
-		myName = myId.slice(0, 8);
+		// Pre-assigned name wins (spawn_session sets PI_SESSION_NAME),
+		// else fall back to id prefix.
+		myName = process.env.PI_SESSION_NAME?.trim() || myId.slice(0, 8);
 		const reg: Registration = {
 			id: myId,
 			name: myName,
