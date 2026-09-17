@@ -87,13 +87,10 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.isIdle()) {
 			pi.sendUserMessage(prompt);
 		} else {
-			// "steer" injects the message as soon as the current assistant
-			// turn finishes its tool calls (before the next LLM call), so a
-			// busy boss sees worker reports promptly instead of after its
-			// whole analysis runs to completion ("followUp" would stall that
-			// long). Mid-stream interruption is exactly what an orchestrator
-			// needs when results arrive while it is reasoning.
-			pi.sendUserMessage(prompt, { deliverAs: "steer" });
+			// "followUp" queues the message until the agent finishes, never
+		// interrupting mid-stream. A worker's report or a boss's steer
+		// arrives after the current work completes — safe by default.
+			pi.sendUserMessage(prompt, { deliverAs: "followUp" });
 		}
 		const fromNames = [...new Set(msgs.map((m) => m.fromName))];
 		ctx.ui.notify(`📨 新消息来自 ${fromNames.join(", ")}`, "info");
