@@ -6,38 +6,23 @@
  * transcript (reuse of peek logic) and registration info.
  */
 
+import { matchesKey } from "@earendil-works/pi-tui";
 import type { Component, Focusable } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import type { Registration } from "./mailbox.js";
+import { type Registration, listSessions } from "./mailbox.js";
 import { peekSession } from "./peek.js";
 
 interface ViewResult {
 	action: "close";
 }
 
-const KEY_LEFT = "\x1b[D";
-const KEY_RIGHT = "\x1b[C";
-const KEY_UP = "\x1b[A";
-const KEY_DOWN = "\x1b[B";
-const KEY_ENTER = "\r";
-const KEY_ESC = "\x1b";
-const KEY_R = "r";
-const KEY_Q = "q";
-
 function pad(s: string, n: number): string {
-	const w = [...s].length;
-	return s + " ".repeat(Math.max(0, n - w));
+	return s + " ".repeat(Math.max(0, n - [...s].length));
 }
 
-function stateBadge(s: Registration): string {
-	if (s.id === CURRENT_ID) return "[本会话]";
+function stateBadge(s: Registration, currentId: string): string {
+	if (s.id === currentId) return "[本会话]";
 	return s.state === "busy" ? "[忙]" : "[闲]";
-}
-
-/** Set by the extension before opening the panel. */
-export let CURRENT_ID = "";
-export function setCurrentId(id: string) {
-	CURRENT_ID = id;
 }
 
 export class AgentsPanel implements Component, Focusable {
@@ -48,60 +33,50 @@ export class AgentsPanel implements Component, Focusable {
 	private detailOf: Registration | null = null;
 	private detailLines: string[] = [];
 	private sessions: Registration[] = [];
-	private done: (r: ViewResult) => void;
+	private done: (r: ViewResult | undefined) => void;
 	private theme: Theme;
-	private clock = 0; // forces periodic refresh while open
+	private currentId: string;
 
-	constructor(theme: Theme, done: (r: ViewResult) => void) {
+	constructor(
+		theme: Theme,
+		done: (r: ViewResult | undefined) => void,
+		currentId: string,
+	) {
 		this.theme = theme;
 		this.done = done;
+		this.currentId = currentId;
 		this.refresh();
 	}
 
 	private refresh() {
-		// Imported lazily to avoid a cycle at module load; mailbox has no
-		// dependency on this file, but keep it clean anyway.
-		// eslint-disable-next-line @typescript-eslint/no-require-imports
-		const { listSessions } = require("./mailbox.js") as typeof import("./mailbox.js");
 		this.sessions = listSessions().sort((a, b) => a.name.localeCompare(b.name));
 		if (this.listIndex >= this.sessions.length) this.listIndex = 0;
 	}
 
-	onKey(key: string): boolean {
+	handleInput(data: string): void {
+		// Detail view: Esc back to list, q closes the panel.
 		if (this.detailOf) {
-			if (key === KEY_ESC) {
+			if (matchesKey(data, "escape")) {
 				this.detailOf = null;
-				return true;
+			} else if (data === "q") {
+				this.done(undefined);
 			}
-			if (key === KEY_Q) {
-				this.done({ action: "close" });
-				return true;
-			}
-			return true; // swallow other keys in detail view
+			return;
 		}
-		if (key === KEY_Q || key === KEY_ESC) {
-			this.done({ action: "close" });
-			return true;
-		}
-		if (key === KEY_UP) {
+
+		if (matchesKey(data, "escape") || data === "q") {
+			this.done(undefined);
+		} else if (matchesKey(data, "up")) {
 			this.listIndex = Math.max(0, this.listIndex - 1);
-			return true;
-		}
-		if (key === KEY_DOWN) {
+		} else if (matchesKey(data, "down")) {
 			this.listIndex = Math.min(this.sessions.length - 1, this.listIndex + 1);
-			return true;
-		}
-		if (key === KEY_ENTER && this.sessions.length > 0) {
-			const s = this.sessions[this.listIndex];
+		} else if (matchesKey(data, "return") && this.sessions.length > 0) {
+			const s = this.sessions[this.listIndex]!;
 			this.detailOf = s;
 			this.detailLines = peekSession(s, 30).split("\n");
-			return true;
-		}
-		if (key === KEY_R) {
+		} else if (data === "r") {
 			this.refresh();
-			return true;
 		}
-		return true; // swallow everything else: we own the keyboard
 	}
 
 	render(width: number): string[] {
@@ -111,7 +86,7 @@ export class AgentsPanel implements Component, Focusable {
 
 		if (this.detailOf) {
 			const s = this.detailOf;
-			lines.push(fg("accent", `● ${s.name}`) + fg("dim", `  ${stateBadge(s)}  ${s.id.slice(0, 8)}`));
+			lines.push(fg("accent", `● ${s.name}`) + fg("dim", `  ${stateBadge(s, this.currentId)}  ${s.id.slice(0, 8)}`));
 			lines.push(fg("dim", `目录: ${s.cwd}`));
 			lines.push(fg("dim", `启动于: ${new Date(s.startedAt).toLocaleString()}`));
 			if (s.busyTaskId) lines.push(fg("warning", `进行中任务: ${s.busyTaskId}`));
@@ -127,14 +102,13 @@ export class AgentsPanel implements Component, Focusable {
 			lines.push(fg("dim", "  没有在线的 session"));
 		}
 		for (let i = 0; i < this.sessions.length; i++) {
-			const s = this.sessions[i];
+			const s = this.sessions[i]!;
 			const dot = s.state === "busy" ? fg("warning", "◐") : fg("success", "●");
 			const name = pad(s.name, 12);
-			const state = pad(stateBadge(s), 6);
+			const state = pad(stateBadge(s, this.currentId), 6);
 			const busy = s.busyTaskId ? ` ${s.busyTaskId.slice(0, 10)}` : "";
 			const row = `  ${dot} ${name} ${state} ${s.cwd}${busy}`;
-			const content = i === this.listIndex ? fg("accent", row) : row;
-			lines.push(content);
+			lines.push(i === this.listIndex ? fg("accent", row) : row);
 		}
 		return lines;
 	}

@@ -45,7 +45,7 @@ import {
 	newTaskId,
 	renderIncoming,
 } from "./src/protocol.js";
-import { AgentsPanel, setCurrentId } from "./src/view.js";
+import { AgentsPanel } from "./src/view.js";
 import { peekSession } from "./src/peek.js";
 
 export default function (pi: ExtensionAPI) {
@@ -107,7 +107,6 @@ export default function (pi: ExtensionAPI) {
 		// Pre-assigned name wins (spawn_session sets PI_SESSION_NAME),
 		// else fall back to id prefix.
 		myName = process.env.PI_SESSION_NAME?.trim() || myId.slice(0, 8);
-		setCurrentId(myId);
 		const reg: Registration = {
 			id: myId,
 			name: myName,
@@ -140,7 +139,7 @@ export default function (pi: ExtensionAPI) {
 			if (ctx.mode !== "tui") return;
 			await ctx.ui.custom(
 				(_tui, theme, _keybindings, done) =>
-					new AgentsPanel(theme, (r) => done(r)),
+					new AgentsPanel(theme, (r) => done(r), myId),
 				{ overlay: true },
 			);
 		},
