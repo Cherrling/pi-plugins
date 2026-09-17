@@ -4,7 +4,7 @@
  * Replaces the built-in footer with:
  *
  *   # wsz @ cn096 in ~/project on git:main✗ x ctx:12% [22:51:13]   ← prompt-style line (bright colors)
- *   ↑1.2k ↓30k R89% W2k CH95.0% $0.42 ██░░░░░░░░ 27%/900k    🧠 high · glm-5.3 (tai)
+ *   ↑1.2k ↓30k R89% W2k CH95.0% ██░░░░░░░░ 27%/900k    🧠 high · glm-5.3 (tai)
  *   <other extensions' ctx.ui.setStatus() texts preserved>          ← only if any
  *
  * Prompt line colors (bright, for readability):
@@ -13,10 +13,9 @@
  *
  * - git branch shows ✗ (warning color) when the worktree is dirty.
  * - Stats line is a superset of the built-in footer: input/output,
- *   cache read (R), cache write (W), cache hit rate (CH), cost
- *   (with "(sub)" for subscription-backed providers), context meter
+ *   cache read (R), cache write (W), cache hit rate (CH), context meter
  *   with "(auto)" auto-compaction indicator, and "xp" when
- *   PI_EXPERIMENTAL=1.
+ *   PI_EXPERIMENTAL=1. (Cost display intentionally omitted.)
  * - 🧠 thinking level uses the theme's per-level color and updates
  *   live: shift+tab cycling, /model switches, session restore.
  * - Context meter turns warning above 70% and error above 90%.
@@ -94,7 +93,6 @@ interface UsageTotals {
 	output: number;
 	cacheRead: number;
 	cacheWrite: number;
-	cost: number;
 }
 
 const BAR_WIDTH = 10;
@@ -210,7 +208,6 @@ function computeUsage(
 		output: 0,
 		cacheRead: 0,
 		cacheWrite: 0,
-		cost: 0,
 	};
 	let cacheHitRate: number | undefined;
 	for (const entry of entries) {
@@ -220,7 +217,6 @@ function computeUsage(
 		totals.output += usage.output ?? 0;
 		totals.cacheRead += usage.cacheRead ?? 0;
 		totals.cacheWrite += usage.cacheWrite ?? 0;
-		totals.cost += usage.cost?.total ?? 0;
 		if (entry.type === "message" && entry.message?.role === "assistant") {
 			const prompt =
 				(usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
@@ -306,7 +302,6 @@ function statsSegment(
 	theme: ThemeLike,
 	totals: UsageTotals,
 	cacheHitRate: number | undefined,
-	provider: string | undefined,
 ): string[] {
 	const parts: string[] = [];
 	if (totals.input) parts.push(theme.fg("dim", `↑${formatTokens(totals.input)}`));
@@ -315,13 +310,6 @@ function statsSegment(
 	if (totals.cacheWrite) parts.push(theme.fg("dim", `W${formatTokens(totals.cacheWrite)}`));
 	if ((totals.cacheRead > 0 || totals.cacheWrite > 0) && cacheHitRate !== undefined) {
 		parts.push(theme.fg("dim", `CH${cacheHitRate.toFixed(1)}%`));
-	}
-	// Kimi Coding is subscription-backed despite using API-key authentication.
-	const usingSubscription = provider === "kimi-coding";
-	if (totals.cost || usingSubscription) {
-		parts.push(
-			theme.fg("dim", `$${totals.cost.toFixed(3)}${usingSubscription ? " (sub)" : ""}`),
-		);
 	}
 	return parts;
 }
@@ -395,7 +383,7 @@ function renderFooterLines(
 	);
 
 	const left = [
-		...statsSegment(theme, totals, cacheHitRate, model?.provider),
+		...statsSegment(theme, totals, cacheHitRate),
 		contextMeter(theme, context, windowTokens, autoCompactEnabled),
 	].join(" ");
 
