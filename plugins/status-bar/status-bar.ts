@@ -3,13 +3,13 @@
  *
  * Replaces the built-in footer with:
  *
- *   # wsz @ cn096 in ~/project on git:main✗ · ctx:12% [22:51:13]   ← prompt-style line (bright colors)
+ *   # wsz @ cn096 in ~/project on git:main✗ [22:51:13]            ← prompt-style line (bright colors)
  *   ↑1.2k ↓30k R89% W2k CH95.0% ██░░░░░░░░ 27%/900k    high · glm-5.3 (tai)
  *   <other extensions' ctx.ui.setStatus() texts preserved>          ← only if any
  *
  * Prompt line colors (bright, for readability):
  *   user = bright cyan, host = bright green, path = bright yellow,
- *   git branch = bright blue, ctx% = success/warning/error by usage.
+ *   git branch = #00ffff.
  *
  * - git branch shows ✗ (warning color) when the worktree is dirty.
  * - Stats line is a superset of the built-in footer: input/output,
@@ -105,7 +105,7 @@ const ANSI = {
 	cyan: "\x1b[96m",
 	green: "\x1b[92m",
 	yellow: "\x1b[93m",
-	blue: "\x1b[94m",
+	blue: "\x1b[38;2;0;255;255m",
 	reset: "\x1b[0m",
 };
 const bright = (code: string, text: string) => code + text + ANSI.reset;
@@ -251,13 +251,6 @@ function promptLine(
 			theme.fg("dim", " on git:") +
 			bright(ANSI.blue, branch) +
 			(dirty ? theme.fg("warning", "✗") : "");
-	}
-
-	const context = ctx.getContextUsage();
-	if (context?.percent != null) {
-		line +=
-			theme.fg("dim", " · ") +
-			theme.fg(usageColor(context.percent), `ctx:${context.percent.toFixed(0)}%`);
 	}
 
 	line +=
