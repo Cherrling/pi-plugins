@@ -3,7 +3,7 @@
  *
  * Replaces the built-in footer with:
  *
- *   # wsz @ cn096 in ~/project on git:main✗ x ctx:12% [22:51:13]   ← prompt-style line (bright colors)
+ *   # wsz @ cn096 in ~/project on git:main✗ · ctx:12% [22:51:13]   ← prompt-style line (bright colors)
  *   ↑1.2k ↓30k R89% W2k CH95.0% ██░░░░░░░░ 27%/900k    high · glm-5.3 (tai)
  *   <other extensions' ctx.ui.setStatus() texts preserved>          ← only if any
  *
@@ -256,7 +256,7 @@ function promptLine(
 	const context = ctx.getContextUsage();
 	if (context?.percent != null) {
 		line +=
-			theme.fg("dim", " x ") +
+			theme.fg("dim", " · ") +
 			theme.fg(usageColor(context.percent), `ctx:${context.percent.toFixed(0)}%`);
 	}
 
@@ -309,7 +309,6 @@ function statsSegment(
 	if (totals.input) parts.push(theme.fg("dim", `↑${formatTokens(totals.input)}`));
 	if (totals.output) parts.push(theme.fg("dim", `↓${formatTokens(totals.output)}`));
 	if (totals.cacheRead) parts.push(theme.fg("dim", `R${formatTokens(totals.cacheRead)}`));
-	if (totals.cacheWrite) parts.push(theme.fg("dim", `W${formatTokens(totals.cacheWrite)}`));
 	if ((totals.cacheRead > 0 || totals.cacheWrite > 0) && cacheHitRate !== undefined) {
 		parts.push(theme.fg("dim", `CH${cacheHitRate.toFixed(1)}%`));
 	}
