@@ -4,7 +4,7 @@ Codex / Claude Code 风格状态栏（统一版，由 status-bar 与 cc-status �
 
 ```
 # wsz @ cn096 in ~/project on git:main✗ x ctx:12% [22:51:13]
-↑1.2k ↓30k R89% W2k CH95.0% ██░░░░░░░░ 27%/900k (auto)    🧠 high · glm-5.3 (tai)
+↑1.2k ↓30k R89% W2k CH95.0% ██░░░░░░░░ 27%/900k (auto)    high · glm-5.3 (tai)
 ```
 
 ## Prompt 行（高亮）
@@ -16,14 +16,14 @@ Codex / Claude Code 风格状态栏（统一版，由 status-bar 与 cc-status �
 - 路径（~ 缩写）：亮黄色
 - git 分支：亮蓝色，工作区 dirty 时追加 ✗（警告色）
 - ctx 百分比：按用量 绿/黄/红
-- 时间：每秒刷新；有会话名时追加在行尾
+- 时间只在有活动（发消息、工具调用、切模型等）时刷新，像 shell prompt 一样，无定时器持续重绘
+- thinking level 纯文字，跟随主题色
 
 ## 统计行（内置 footer 的完全超集）
 
 - ↑输入 ↓输出 R缓存读 **W缓存写 CH缓存命中率**（新补齐）
 - 上下文用量条 + **(auto)** 自动压缩指示器（新补齐）
 - **xp** 实验特性指示（PI_EXPERIMENTAL=1 时，新补齐）
-- 🧠 thinking level 跟随主题色，shift+tab / `/model` 实时更新
 - 多 provider 时右侧显示 provider 名
 - 保留其他扩展通过 `ctx.ui.setStatus()` 设置的文本
 

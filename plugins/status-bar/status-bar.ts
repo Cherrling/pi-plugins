@@ -4,7 +4,7 @@
  * Replaces the built-in footer with:
  *
  *   # wsz @ cn096 in ~/project on git:main✗ x ctx:12% [22:51:13]   ← prompt-style line (bright colors)
- *   ↑1.2k ↓30k R89% W2k CH95.0% ██░░░░░░░░ 27%/900k    🧠 high · glm-5.3 (tai)
+ *   ↑1.2k ↓30k R89% W2k CH95.0% ██░░░░░░░░ 27%/900k    high · glm-5.3 (tai)
  *   <other extensions' ctx.ui.setStatus() texts preserved>          ← only if any
  *
  * Prompt line colors (bright, for readability):
@@ -16,11 +16,13 @@
  *   cache read (R), cache write (W), cache hit rate (CH), context meter
  *   with "(auto)" auto-compaction indicator, and "xp" when
  *   PI_EXPERIMENTAL=1. (Cost display intentionally omitted.)
- * - 🧠 thinking level uses the theme's per-level color and updates
- *   live: shift+tab cycling, /model switches, session restore.
+ * - Thinking level (plain text, no emoji) uses the theme's per-level color
+ *   and updates live: shift+tab cycling, /model switches, session restore.
  * - Context meter turns warning above 70% and error above 90%.
  * - Token stats count assistant + toolResult + compaction usage.
- * - Clock in the prompt line updates every second.
+ * - Clock shows the time of the last render (no ticking timer; refreshes
+ *   on activity, like a shell prompt).
+ * - Thinking level shown as plain text (no emoji).
  * - Toggle with /statusbar.
  */
 
@@ -320,8 +322,7 @@ function thinkingSegment(
 	level: ThinkingLevel,
 ): string | null {
 	if (!model?.reasoning) return null;
-	const icon = level === "off" ? "◇" : "🧠";
-	return theme.fg(LEVEL_COLOR[level], `${icon} ${level}`);
+	return theme.fg(LEVEL_COLOR[level], level);
 }
 
 function modelSegment(
@@ -414,22 +415,14 @@ let autoCompactEnabled = true;
 export default function (pi: ExtensionAPI) {
 	let enabled = true;
 	let requestRerender: (() => void) | undefined;
-	let clockTimer: ReturnType<typeof setInterval> | undefined;
 
 	function install(ctx: ExtensionContext) {
 		autoCompactEnabled = readAutoCompactionEnabled();
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			requestRerender = () => tui.requestRender();
 			const unsubscribe = footerData.onBranchChange(() => tui.requestRender());
-			// Keep the clock in the prompt line ticking.
-			clearInterval(clockTimer);
-			clockTimer = setInterval(() => requestRerender?.(), 1000);
 			return {
-				dispose: () => {
-					unsubscribe();
-					clearInterval(clockTimer);
-					clockTimer = undefined;
-				},
+				dispose: unsubscribe,
 				invalidate() {},
 				render: (width: number) => renderFooterLines(ctx, theme, footerData, width),
 			};
@@ -441,10 +434,20 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// Request a repaint when state changes while otherwise idle.
+	// No clock timer: the footer refreshes on activity, like a shell prompt.
 	pi.on("model_select", () => requestRerender?.());
 	pi.on("thinking_level_select", () => requestRerender?.());
 	pi.on("session_info_changed", () => requestRerender?.());
+	pi.on("message_start", (_event, ctx) => {
+		if (ctx.mode === "tui") requestRerender?.();
+	});
 	pi.on("message_end", (_event, ctx) => {
+		if (ctx.mode === "tui") requestRerender?.();
+	});
+	pi.on("turn_end", (_event, ctx) => {
+		if (ctx.mode === "tui") requestRerender?.();
+	});
+	pi.on("tool_call_end", (_event, ctx) => {
 		if (ctx.mode === "tui") requestRerender?.();
 	});
 	pi.registerCommand("statusbar", {
