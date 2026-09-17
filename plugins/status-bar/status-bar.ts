@@ -236,6 +236,7 @@ function promptLine(
 	footerData: FooterDataLike,
 	theme: ThemeLike,
 	width: number,
+	clock: string,
 ): string {
 	let line =
 		theme.fg("dim", "# ") +
@@ -256,7 +257,7 @@ function promptLine(
 
 	line +=
 		theme.fg("dim", " [") +
-		new Date().toLocaleTimeString("en-GB", { hour12: false }) +
+		clock +
 		"]";
 
 	const sessionName = ctx.sessionManager.getSessionName();
@@ -366,6 +367,7 @@ function renderFooterLines(
 	theme: ThemeLike,
 	footerData: FooterDataLike,
 	width: number,
+	clock: string,
 ): string[] {
 	const model = ctx.model;
 	const context = ctx.getContextUsage();
@@ -390,7 +392,7 @@ function renderFooterLines(
 	}
 
 	const lines = [
-		promptLine(ctx, footerData, theme, width),
+		promptLine(ctx, footerData, theme, width, clock),
 		composeLine(left, right, width),
 	];
 	if (process.env.PI_EXPERIMENTAL === "1") {
@@ -405,6 +407,14 @@ function renderFooterLines(
 
 let autoCompactEnabled = true;
 
+/** Timestamp shown in the prompt line. Only updated on activity events,
+ *  never inside render(), so external re-renders cannot make the clock tick. */
+let clockStamp = "";
+
+function updateClock() {
+	clockStamp = new Date().toLocaleTimeString("en-GB", { hour12: false });
+}
+
 export default function (pi: ExtensionAPI) {
 	let enabled = true;
 	let requestRerender: (() => void) | undefined;
@@ -412,12 +422,16 @@ export default function (pi: ExtensionAPI) {
 	function install(ctx: ExtensionContext) {
 		autoCompactEnabled = readAutoCompactionEnabled();
 		ctx.ui.setFooter((tui, theme, footerData) => {
-			requestRerender = () => tui.requestRender();
-			const unsubscribe = footerData.onBranchChange(() => tui.requestRender());
+			requestRerender = () => {
+				updateClock();
+				tui.requestRender();
+			};
+			const unsubscribe = footerData.onBranchChange(() => requestRerender?.());
 			return {
 				dispose: unsubscribe,
 				invalidate() {},
-				render: (width: number) => renderFooterLines(ctx, theme, footerData, width),
+				render: (width: number) =>
+					renderFooterLines(ctx, theme, footerData, width, clockStamp),
 			};
 		});
 	}
