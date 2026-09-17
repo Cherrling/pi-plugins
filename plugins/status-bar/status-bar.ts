@@ -4,7 +4,7 @@
  * Replaces the built-in footer with:
  *
  *   # wsz @ cn096 in ~/project on git:main✗                            ← prompt-style line (bright colors)
- *   ↑1.2k ↓30k R89% W2k CH95.0% ██░░░░░░░░ 27%/900k    high · glm-5.3 (tai)
+ *   ↑1.2k ↓30k R89% CH95.0% 234K/1M (auto)    high · glm-5.3 (tai)
  *   <other extensions' ctx.ui.setStatus() texts preserved>          ← only if any
  *
  * Prompt line colors (bright, for readability):
@@ -18,7 +18,8 @@
  *   PI_EXPERIMENTAL=1. (Cost display intentionally omitted.)
  * - Thinking level (plain text, no emoji) uses the theme's per-level color
  *   and updates live: shift+tab cycling, /model switches, session restore.
- * - Context meter turns warning above 70% and error above 90%.
+ * - Context usage shown as used/window tokens (e.g. 234K/1M), colored
+ *   warning above 70% and error above 90%.
  * - Token stats count assistant + toolResult + compaction usage.
  * - Toggle with /statusbar.
  */
@@ -93,8 +94,6 @@ interface UsageTotals {
 	cacheRead: number;
 	cacheWrite: number;
 }
-
-const BAR_WIDTH = 10;
 
 // ── bright ANSI colors for the prompt line ───────────────────────────────────
 
@@ -257,31 +256,21 @@ function promptLine(
 	return truncateToWidth(line, width, theme.fg("dim", "…"));
 }
 
-function contextMeter(
+function contextUsage(
 	theme: ThemeLike,
 	context: ContextUsage | undefined,
 	windowTokens: number,
 	autoCompact: boolean,
 ): string {
 	const autoIndicator = autoCompact ? " (auto)" : "";
-	const percent = context?.percent ?? null;
-	if (percent === null) {
+	const tokens = context?.tokens ?? null;
+	if (tokens === null) {
 		// Right after compaction, before the next LLM response.
-		return theme.fg(
-			"dim",
-			`${"·".repeat(BAR_WIDTH)} ?/${formatTokens(windowTokens)}${autoIndicator}`,
-		);
+		return theme.fg("dim", `?/${formatTokens(windowTokens)}${autoIndicator}`);
 	}
-	const filled = Math.max(
-		1,
-		Math.min(BAR_WIDTH, Math.round((percent / 100) * BAR_WIDTH)),
-	);
-	const color = usageColor(percent);
+	const percent = context?.percent ?? (windowTokens > 0 ? (tokens / windowTokens) * 100 : 0);
 	return (
-		theme.fg(color, "█".repeat(filled)) +
-		theme.fg("dim", "░".repeat(BAR_WIDTH - filled)) +
-		" " +
-		theme.fg(color, `${percent.toFixed(0)}%`) +
+		theme.fg(usageColor(percent), formatTokens(tokens)) +
 		theme.fg("dim", `/${formatTokens(windowTokens)}${autoIndicator}`)
 	);
 }
@@ -370,7 +359,7 @@ function renderFooterLines(
 
 	const left = [
 		...statsSegment(theme, totals, cacheHitRate),
-		contextMeter(theme, context, windowTokens, autoCompactEnabled),
+		contextUsage(theme, context, windowTokens, autoCompactEnabled),
 	].join(" ");
 
 	let right = modelSegment(theme, model, level);
