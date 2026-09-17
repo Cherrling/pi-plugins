@@ -3,7 +3,7 @@
  *
  * Replaces the built-in footer with:
  *
- *   # wsz @ cn096 in ~/project on git:main✗ [22:51:13]            ← prompt-style line (bright colors)
+ *   # wsz @ cn096 in ~/project on git:main✗                            ← prompt-style line (bright colors)
  *   ↑1.2k ↓30k R89% W2k CH95.0% ██░░░░░░░░ 27%/900k    high · glm-5.3 (tai)
  *   <other extensions' ctx.ui.setStatus() texts preserved>          ← only if any
  *
@@ -20,9 +20,6 @@
  *   and updates live: shift+tab cycling, /model switches, session restore.
  * - Context meter turns warning above 70% and error above 90%.
  * - Token stats count assistant + toolResult + compaction usage.
- * - Clock shows the time of the last render (no ticking timer; refreshes
- *   on activity, like a shell prompt).
- * - Thinking level shown as plain text (no emoji).
  * - Toggle with /statusbar.
  */
 
@@ -236,7 +233,6 @@ function promptLine(
 	footerData: FooterDataLike,
 	theme: ThemeLike,
 	width: number,
-	clock: string,
 ): string {
 	let line =
 		theme.fg("dim", "# ") +
@@ -254,11 +250,6 @@ function promptLine(
 			bright(ANSI.blue, branch) +
 			(dirty ? theme.fg("warning", "✗") : "");
 	}
-
-	line +=
-		theme.fg("dim", " [") +
-		clock +
-		"]";
 
 	const sessionName = ctx.sessionManager.getSessionName();
 	if (sessionName) line += theme.fg("dim", ` · ${sessionName}`);
@@ -367,7 +358,6 @@ function renderFooterLines(
 	theme: ThemeLike,
 	footerData: FooterDataLike,
 	width: number,
-	clock: string,
 ): string[] {
 	const model = ctx.model;
 	const context = ctx.getContextUsage();
@@ -392,7 +382,7 @@ function renderFooterLines(
 	}
 
 	const lines = [
-		promptLine(ctx, footerData, theme, width, clock),
+		promptLine(ctx, footerData, theme, width),
 		composeLine(left, right, width),
 	];
 	if (process.env.PI_EXPERIMENTAL === "1") {
@@ -407,14 +397,6 @@ function renderFooterLines(
 
 let autoCompactEnabled = true;
 
-/** Timestamp shown in the prompt line. Only updated on activity events,
- *  never inside render(), so external re-renders cannot make the clock tick. */
-let clockStamp = "";
-
-function updateClock() {
-	clockStamp = new Date().toLocaleTimeString("en-GB", { hour12: false });
-}
-
 export default function (pi: ExtensionAPI) {
 	let enabled = true;
 	let requestRerender: (() => void) | undefined;
@@ -422,16 +404,13 @@ export default function (pi: ExtensionAPI) {
 	function install(ctx: ExtensionContext) {
 		autoCompactEnabled = readAutoCompactionEnabled();
 		ctx.ui.setFooter((tui, theme, footerData) => {
-			requestRerender = () => {
-				updateClock();
-				tui.requestRender();
-			};
+			requestRerender = () => tui.requestRender();
 			const unsubscribe = footerData.onBranchChange(() => requestRerender?.());
 			return {
 				dispose: unsubscribe,
 				invalidate() {},
 				render: (width: number) =>
-					renderFooterLines(ctx, theme, footerData, width, clockStamp),
+					renderFooterLines(ctx, theme, footerData, width),
 			};
 		});
 	}
@@ -441,7 +420,6 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// Request a repaint when state changes while otherwise idle.
-	// No clock timer: the footer refreshes on activity, like a shell prompt.
 	pi.on("model_select", () => requestRerender?.());
 	pi.on("thinking_level_select", () => requestRerender?.());
 	pi.on("session_info_changed", () => requestRerender?.());
