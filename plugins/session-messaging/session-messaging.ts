@@ -4,10 +4,10 @@
  * Lets multiple pi sessions send messages to each other.
  *
  * - Sessions auto-register in ~/.pi/agent/mailbox/ with a heartbeat.
- * - /msg <name|id-prefix> <text>   send a message to another session
  * - /msg-name <name>               set a friendly name for this session
  * - /msg-sessions                  list online sessions
  * - Tool `send_session_message`    lets the agent itself reply/initiate messages
+ * - Tool `list_sessions`           enumerate other online sessions
  *
  * Received messages are injected as user messages into the conversation.
  */
@@ -195,17 +195,9 @@ export default function (pi: ExtensionAPI) {
 		return `已发送给 ${target.name} (${target.id.slice(0, 8)})。`;
 	};
 
-	pi.registerCommand("msg", {
-		description: "发送消息到另一个 pi session: /msg <name|id> <text>",
-		handler: async (args, ctx) => {
-			const m = args.trim().match(/^(\S+)\s+([\s\S]+)$/);
-			if (!m) {
-				ctx.ui.notify("用法: /msg <name|id> <text>", "warning");
-				return;
-			}
-			ctx.ui.notify(sendMessage(myName, m[1], m[2]), "info");
-		},
-	});
+	// No human-facing /msg command: to talk to another session just switch
+	// to its window. The send_session_message tool below is the agent-facing
+	// path, which is what this extension is actually for.
 
 	pi.registerCommand("msg-name", {
 		description: "给当前 session 起名字: /msg-name <name>",
