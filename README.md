@@ -13,7 +13,8 @@
 
 | 插件 | 说明 |
 |---|---|
-| [status-bar](plugins/status-bar/) | Codex/Claude Code 风格状态栏：cwd + git 分支、token/上下文用量条、模型与 thinking level。`/statusbar` 切换。 |
+| [status-bar](plugins/status-bar/) | Codex/Claude Code 风格状态栏（完整版）：cwd + git 分支、token/上下文用量条、费用、模型与 thinking level。`/statusbar` 切换。 |
+| [cc-status](plugins/cc-status/) | Claude Code 风格状态栏（精简版）：cwd + git 分支 + thinking level + 模型名。 |
 | [session-messaging](plugins/session-messaging/) | 多个 pi 会话之间互相通信：mailbox + 心跳注册，`/msg` 发消息，agent 侧有 `send_session_message` 工具。 |
 
 安装方式（以 status-bar 为例）：
