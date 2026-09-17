@@ -9,7 +9,8 @@
  *
  * Prompt line colors (bright, for readability):
  *   user = bright cyan, host = bright green, path = bright yellow,
- *   git branch = #00ffff.
+ *   git branch = #00ffff (with 256-color fallback for non-truecolor
+ *   terminals).
  *
  * - git branch shows ✗ (warning color) when the worktree is dirty.
  * - Stats line is a superset of the built-in footer: input/output,
@@ -108,6 +109,21 @@ const ANSI = {
 	blue: "\x1b[38;2;0;255;255m",
 	reset: "\x1b[0m",
 };
+
+/**
+ * Truecolor escape sequences render as garbage on terminals without 24-bit
+ * color support. Detect via COLORTERM and fall back to the nearest 256-color
+ * sequence (#00ffff is exactly xterm-256 color 51).
+ */
+function resolveBlue(): string {
+	const colorterm = process.env.COLORTERM ?? "";
+	if (colorterm.includes("truecolor") || colorterm.includes("24bit")) {
+		return ANSI.blue;
+	}
+	return "\x1b[38;5;51m";
+}
+
+let blueCode: string | undefined;
 const bright = (code: string, text: string) => code + text + ANSI.reset;
 
 // ── formatting helpers ────────────────────────────────────────────────────────
@@ -247,9 +263,10 @@ function promptLine(
 	const branch = footerData.getGitBranch();
 	if (branch) {
 		const dirty = isGitDirty(ctx.cwd);
+		blueCode ??= resolveBlue();
 		line +=
 			theme.fg("dim", " on git:") +
-			bright(ANSI.blue, branch) +
+			bright(blueCode, branch) +
 			(dirty ? theme.fg("warning", "✗") : "");
 	}
 
