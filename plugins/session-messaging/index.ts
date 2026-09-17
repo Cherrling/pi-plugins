@@ -22,7 +22,6 @@
 
 import { Type } from "@sinclair/typebox";
 import fs from "node:fs";
-import { spawn } from "node:child_process";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	HEARTBEAT_MS,
@@ -45,7 +44,6 @@ import {
 	newTaskId,
 	renderIncoming,
 } from "./src/protocol.js";
-import { AgentsPanel } from "./src/view.js";
 import { peekSession } from "./src/peek.js";
 
 export default function (pi: ExtensionAPI) {
@@ -104,8 +102,8 @@ export default function (pi: ExtensionAPI) {
 		if (prevId) unregister(prevId);
 
 		myId = ctx.sessionManager.getSessionId();
-		// Pre-assigned name wins (spawn_session sets PI_SESSION_NAME),
-		// else fall back to id prefix.
+		// PI_SESSION_NAME can pre-assign a friendly name when the session is
+		// launched programmatically (e.g. via bash), else fall back to id prefix.
 		myName = process.env.PI_SESSION_NAME?.trim() || myId.slice(0, 8);
 		const reg: Registration = {
 			id: myId,
@@ -132,18 +130,6 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// ── human commands ──────────────────────────────────────────────
-
-	pi.registerCommand("agents", {
-		description: "打开 agent view 面板：查看所有在线 session 及其动态",
-		handler: async (_args, ctx) => {
-			if (ctx.mode !== "tui") return;
-			await ctx.ui.custom(
-				(_tui, theme, _keybindings, done) =>
-					new AgentsPanel(theme, (r) => done(r), myId),
-				{ overlay: true },
-			);
-		},
-	});
 
 	pi.registerCommand("msg-name", {
 		description: "给当前 session 起名字: /msg-name <name>",
@@ -173,102 +159,6 @@ export default function (pi: ExtensionAPI) {
 				return `${s.name}${state}  ${s.id.slice(0, 8)}  ${s.cwd}${me}`;
 			});
 			ctx.ui.notify(lines.join("\n"), "info");
-		},
-	});
-
-	// ── background worker spawning ──────────────────────────────
-
-	/**
-	 * Spawn a detached, headless `pi -p` process as a background worker.
-	 * It loads this same extension (registers in the mailbox, gets the
-	 * send_session_message tool), works on `task`, reports the result back
-	 * to us, and exits. No terminal window is created.
-	 */
-	const spawnWorker = (
-		name: string,
-		cwd: string,
-		task: string,
-	): { pid: number; sessionId: string } => {
-		const sessionId = `sm-${name}`;
-		const reportBack =
-			`完成后，用 send_session_message 工具向 "${myName}" 回报结果` +
-			`(调用前先用 list_sessions 确认我在)；如果任务无法完成也要回报原因。`;
-		const prompt = `${task}\n\n(${reportBack})`;
-		const argv = [
-			"-p",
-			"--session-id",
-			sessionId,
-			"--no-extensions",
-			"-e",
-			extensionSelfPath(),
-			prompt,
-		];
-		const child = spawn("pi", argv, {
-			cwd,
-			detached: true,
-			stdio: ["ignore", "ignore", "ignore"],
-			env: {
-				...process.env,
-			PI_SESSION_NAME: name,
-		},
-		});
-		child.unref();
-		return { pid: child.pid ?? -1, sessionId };
-	};
-
-	const extensionSelfPath = (): string => {
-		// import.meta.url = .../extensions/session-messaging/index.ts
-		const self = new URL(import.meta.url).pathname;
-		return self;
-	};
-
-	pi.registerTool({
-		name: "spawn_session",
-		label: "拉起后台 worker",
-		description:
-			"在指定目录拉起一个无界面的后台 pi worker（不占终端窗口），立即返回。" +
-			"worker 会自动加载会话通信能力；给它 task 描述任务，完成后会通过 session 消息回报结果。" +
-			"适合并行扫描/批量处理；需要盯着看或人工干预的任务建议让用户手动开会话。",
-		parameters: Type.Object({
-			name: Type.String({
-				description: "worker 名字（字母数字和-_，会成为 session id 的一部分）",
-			}),
-			cwd: Type.String({ description: "worker 的工作目录（绝对路径）" }),
-			task: Type.String({ description: "要执行的任务描述，要自包含、具体" }),
-		}),
-		async execute(
-			_toolCallId,
-			{ name, cwd, task }: { name: string; cwd: string; task: string },
-		) {
-			if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
-				return {
-					details: undefined,
-					content: [
-						{
-						type: "text",
-						text: "错误：名字只能包含字母数字和 . _ -，且以字母数字开头。",
-					},
-				],
-				};
-			}
-			if (!fs.existsSync(cwd)) {
-					return {
-					details: undefined,
-					content: [{ type: "text", text: `错误：目录不存在 ${cwd}` }],
-				};
-			}
-			const { pid, sessionId } = spawnWorker(name, cwd, task);
-			return {
-					details: undefined,
-					content: [
-						{
-						type: "text",
-						text:
-							`已拉起后台 worker "${name}"（pid=${pid}，session=${sessionId}，目录 ${cwd}）。` +
-							`它正在执行任务，完成后会通过 session 消息回报。可用 /agents 面板或 peek_session 查看进度。`,
-					},
-				],
-			};
 		},
 	});
 

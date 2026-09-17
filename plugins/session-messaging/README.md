@@ -32,9 +32,13 @@ plugins/session-messaging/
 | `report_task_result` | to, taskId, result | worker 回报结果（自动把状态翻回 idle） |
 | `peek_session` | to, lines? | 只读查看对方最近对话（默认 20 条，工具输出压缩到 200 字符，5 分钟未更新提示卡死） |
 
+> 拉起新 session 不是本插件的职责：boss 真有需要可以自己用 bash 派出
+> `pi -p`（建议带 `PI_SESSION_NAME=<名字> --session-id sm-<名字>`，
+> 新会话会自动注册进 mailbox 并能回报结果）。
+
 ## 工作流（内核审计示例）
 
-1. 各 worker 会话 `/msg-name` 起名：`syscall-audit`、`driver-audit`…
+1. 各 worker 会话起名：`/msg-name syscall-audit`（或用 PI_SESSION_NAME 派出）
 2. boss 会话起名 `boss`，你对它说「扫一遍 net/ 子系统」
 3. boss：`list_sessions` → 给空闲 worker `dispatch_task`
 4. boss 随时 `peek_session` 看进度（不打扰 worker）
@@ -44,8 +48,5 @@ plugins/session-messaging/
 ## 安装
 
 ```bash
-# 目录形式（pi 支持目录扩展，入口 index.ts）
 cp -r . ~/.pi/agent/extensions/session-messaging
 ```
-
-> 单文件时代的历史：原 `session-messaging.ts` 来自 ai（root@ai -J pve）。
