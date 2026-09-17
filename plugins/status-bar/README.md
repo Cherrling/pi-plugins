@@ -4,7 +4,7 @@ Codex / Claude Code 风格状态栏（统一版，由 status-bar 与 cc-status �
 
 ```
 # wsz @ cn096 in ~/project on git:main✗
-↑1.2k ↓30k R89% CH95.0% ██░░░░░░░░ 27%/900k (auto)    high · glm-5.3 (tai)
+↑1.2k ↓30k R89% CH95.0% 234K/1M (auto)    high · glm-5.3 (tai)
 ```
 
 ## Prompt 行（高亮）
@@ -21,7 +21,7 @@ Codex / Claude Code 风格状态栏（统一版，由 status-bar 与 cc-status �
 ## 统计行（内置 footer 的完全超集）
 
 - ↑输入 ↓输出 R缓存读 **CH缓存命中率**
-- 上下文用量条 + **(auto)** 自动压缩指示器（新补齐）
+- 上下文用量 `234K/1M` 数字格式（已用/窗口，随占用变色）+ **(auto)** 自动压缩指示
 - **xp** 实验特性指示（PI_EXPERIMENTAL=1 时，新补齐）
 - 多 provider 时右侧显示 provider 名
 - 保留其他扩展通过 `ctx.ui.setStatus()` 设置的文本
