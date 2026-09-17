@@ -3,18 +3,25 @@
  *
  * Replaces the built-in footer with:
  *
- *   ~/project (main✗) · my-session                        ← cwd (yellow) + git branch (✗ if dirty) + session name
- *   ↑1.2k ↓30k R89% $0.42 ██░░░░░░░░ 27%/900k    🧠 high · glm-5.3 (tai)
- *   <other extensions' ctx.ui.setStatus() texts preserved>  ← only if any
+ *   # wsz @ cn096 in ~/project on git:main✗ x ctx:12% [22:51:13]   ← prompt-style line (bright colors)
+ *   ↑1.2k ↓30k R89% W2k CH95.0% $0.42 ██░░░░░░░░ 27%/900k    🧠 high · glm-5.3 (tai)
+ *   <other extensions' ctx.ui.setStatus() texts preserved>          ← only if any
  *
- * - git branch shows a ✗ warning marker when the worktree is dirty
- *   (merged from cc-status).
+ * Prompt line colors (bright, for readability):
+ *   user = bright cyan, host = bright green, path = bright yellow,
+ *   git branch = bright blue, ctx% = success/warning/error by usage.
  *
- * - 🧠 thinking level uses the theme's per-level color (thinkingLow /
- *   thinkingHigh / thinkingMax ...) and updates live: shift+tab cycling,
- *   /model switches, session restore.
+ * - git branch shows ✗ (warning color) when the worktree is dirty.
+ * - Stats line is a superset of the built-in footer: input/output,
+ *   cache read (R), cache write (W), cache hit rate (CH), cost
+ *   (with "(sub)" for subscription-backed providers), context meter
+ *   with "(auto)" auto-compaction indicator, and "xp" when
+ *   PI_EXPERIMENTAL=1.
+ * - 🧠 thinking level uses the theme's per-level color and updates
+ *   live: shift+tab cycling, /model switches, session restore.
  * - Context meter turns warning above 70% and error above 90%.
  * - Token stats count assistant + toolResult + compaction usage.
+ * - Clock in the prompt line updates every second.
  * - Toggle with /statusbar.
  */
 
@@ -25,6 +32,9 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { execSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 type ThinkingLevel =
 	| "off"
@@ -83,10 +93,22 @@ interface UsageTotals {
 	input: number;
 	output: number;
 	cacheRead: number;
+	cacheWrite: number;
 	cost: number;
 }
 
 const BAR_WIDTH = 10;
+
+// ── bright ANSI colors for the prompt line ───────────────────────────────────
+
+const ANSI = {
+	cyan: "\x1b[96m",
+	green: "\x1b[92m",
+	yellow: "\x1b[93m",
+	blue: "\x1b[94m",
+	reset: "\x1b[0m",
+};
+const bright = (code: string, text: string) => code + text + ANSI.reset;
 
 // ── formatting helpers ────────────────────────────────────────────────────────
 
@@ -113,21 +135,20 @@ function sanitizeStatusText(text: string): string {
 		.trim();
 }
 
-/**
- * Check if the git worktree at `cwd` is dirty.
- * Cached briefly so a footer render never shells out more than once per
- * few seconds (merged from cc-status).
- */
+function usageColor(percent: number): FooterColor {
+	if (percent > 90) return "error";
+	if (percent > 70) return "warning";
+	return "success";
+}
+
+// ── git dirty check (from cc-status, cached) ──────────────────────────────────
+
 const DIRTY_CACHE_MS = 3000;
 let dirtyCache: { cwd: string; dirty: boolean; at: number } | undefined;
 
 function isGitDirty(cwd: string): boolean {
 	const now = Date.now();
-	if (
-		dirtyCache &&
-		dirtyCache.cwd === cwd &&
-		now - dirtyCache.at < DIRTY_CACHE_MS
-	) {
+	if (dirtyCache && dirtyCache.cwd === cwd && now - dirtyCache.at < DIRTY_CACHE_MS) {
 		return dirtyCache.dirty;
 	}
 	let dirty = false;
@@ -146,10 +167,24 @@ function isGitDirty(cwd: string): boolean {
 	return dirty;
 }
 
-function usageColor(percent: number): FooterColor {
-	if (percent > 90) return "error";
-	if (percent > 70) return "warning";
-	return "success";
+// ── settings probes (best-effort, read once) ─────────────────────────────────
+
+function readAutoCompactionEnabled(): boolean {
+	// Same source the built-in footer uses (settingsManager); extensions
+	// cannot reach it directly, so read the settings files. Default: on.
+	const candidates = [
+		path.join(os.homedir(), ".pi", "settings.json"),
+		path.join(process.cwd(), ".pi", "settings.json"),
+	];
+	for (const file of candidates) {
+		try {
+			const raw = JSON.parse(fs.readFileSync(file, "utf8"));
+			if (typeof raw.autoCompaction === "boolean") return raw.autoCompaction;
+		} catch {
+			// missing or invalid — try the next candidate
+		}
+	}
+	return true;
 }
 
 // ── data helpers ──────────────────────────────────────────────────────────────
@@ -158,8 +193,7 @@ function usageColor(percent: number): FooterColor {
 function entryUsage(entry: SessionEntryLike): UsageLike | undefined {
 	if (entry.type === "message") {
 		const role = entry.message?.role;
-		if (role === "assistant" || role === "toolResult")
-			return entry.message?.usage;
+		if (role === "assistant" || role === "toolResult") return entry.message?.usage;
 		return undefined;
 	}
 	if (entry.type === "branch_summary" || entry.type === "compaction")
@@ -167,54 +201,91 @@ function entryUsage(entry: SessionEntryLike): UsageLike | undefined {
 	return undefined;
 }
 
-/** Sum usage across all session entries. */
-function computeUsageTotals(entries: Iterable<SessionEntryLike>): UsageTotals {
-	const totals: UsageTotals = { input: 0, output: 0, cacheRead: 0, cost: 0 };
+/** Sum usage + latest cache hit rate across all session entries. */
+function computeUsage(
+	entries: Iterable<SessionEntryLike>,
+): { totals: UsageTotals; cacheHitRate: number | undefined } {
+	const totals: UsageTotals = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		cost: 0,
+	};
+	let cacheHitRate: number | undefined;
 	for (const entry of entries) {
 		const usage = entryUsage(entry);
 		if (!usage) continue;
 		totals.input += usage.input ?? 0;
 		totals.output += usage.output ?? 0;
 		totals.cacheRead += usage.cacheRead ?? 0;
+		totals.cacheWrite += usage.cacheWrite ?? 0;
 		totals.cost += usage.cost?.total ?? 0;
+		if (entry.type === "message" && entry.message?.role === "assistant") {
+			const prompt =
+				(usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+			if (prompt > 0) cacheHitRate = ((usage.cacheRead ?? 0) / prompt) * 100;
+		}
 	}
-	return totals;
+	return { totals, cacheHitRate };
 }
 
 // ── footer segments ───────────────────────────────────────────────────────────
 
-function pwdLine(
+function promptLine(
 	ctx: ExtensionContext,
 	footerData: FooterDataLike,
 	theme: ThemeLike,
 	width: number,
 ): string {
-	let pwd = theme.fg("warning", formatCwd(ctx.cwd));
+	let line =
+		theme.fg("dim", "# ") +
+		bright(ANSI.cyan, os.userInfo().username) +
+		theme.fg("dim", " @ ") +
+		bright(ANSI.green, os.hostname()) +
+		theme.fg("dim", " in ") +
+		bright(ANSI.yellow, formatCwd(ctx.cwd));
+
 	const branch = footerData.getGitBranch();
 	if (branch) {
 		const dirty = isGitDirty(ctx.cwd);
-		let branchPart = ` (${branch})`;
-		if (dirty) branchPart += "✗";
-		pwd +=
-			theme.fg("dim", branchPart.slice(0, 1)) +
-			theme.fg(dirty ? "warning" : "dim", branchPart.slice(1));
+		line +=
+			theme.fg("dim", " on git:") +
+			bright(ANSI.blue, branch) +
+			(dirty ? theme.fg("warning", "✗") : "");
 	}
+
+	const context = ctx.getContextUsage();
+	if (context?.percent != null) {
+		line +=
+			theme.fg("dim", " x ") +
+			theme.fg(usageColor(context.percent), `ctx:${context.percent.toFixed(0)}%`);
+	}
+
+	line +=
+		theme.fg("dim", " [") +
+		new Date().toLocaleTimeString("en-GB", { hour12: false }) +
+		"]";
+
 	const sessionName = ctx.sessionManager.getSessionName();
-	if (sessionName) pwd += theme.fg("dim", ` · ${sessionName}`);
-	return truncateToWidth(pwd, width, theme.fg("dim", "…"));
+	if (sessionName) line += theme.fg("dim", ` · ${sessionName}`);
+
+	return truncateToWidth(line, width, theme.fg("dim", "…"));
 }
 
 function contextMeter(
 	theme: ThemeLike,
 	context: ContextUsage | undefined,
 	windowTokens: number,
+	autoCompact: boolean,
 ): string {
+	const autoIndicator = autoCompact ? " (auto)" : "";
 	const percent = context?.percent ?? null;
 	if (percent === null) {
 		// Right after compaction, before the next LLM response.
 		return theme.fg(
 			"dim",
-			`${"·".repeat(BAR_WIDTH)} ?/${formatTokens(windowTokens)}`,
+			`${"·".repeat(BAR_WIDTH)} ?/${formatTokens(windowTokens)}${autoIndicator}`,
 		);
 	}
 	const filled = Math.max(
@@ -227,19 +298,31 @@ function contextMeter(
 		theme.fg("dim", "░".repeat(BAR_WIDTH - filled)) +
 		" " +
 		theme.fg(color, `${percent.toFixed(0)}%`) +
-		theme.fg("dim", `/${formatTokens(windowTokens)}`)
+		theme.fg("dim", `/${formatTokens(windowTokens)}${autoIndicator}`)
 	);
 }
 
-function statsSegment(theme: ThemeLike, totals: UsageTotals): string[] {
+function statsSegment(
+	theme: ThemeLike,
+	totals: UsageTotals,
+	cacheHitRate: number | undefined,
+	provider: string | undefined,
+): string[] {
 	const parts: string[] = [];
-	if (totals.input)
-		parts.push(theme.fg("dim", `↑${formatTokens(totals.input)}`));
-	if (totals.output)
-		parts.push(theme.fg("dim", `↓${formatTokens(totals.output)}`));
-	if (totals.cacheRead)
-		parts.push(theme.fg("dim", `R${formatTokens(totals.cacheRead)}`));
-	if (totals.cost) parts.push(theme.fg("dim", `$${totals.cost.toFixed(2)}`));
+	if (totals.input) parts.push(theme.fg("dim", `↑${formatTokens(totals.input)}`));
+	if (totals.output) parts.push(theme.fg("dim", `↓${formatTokens(totals.output)}`));
+	if (totals.cacheRead) parts.push(theme.fg("dim", `R${formatTokens(totals.cacheRead)}`));
+	if (totals.cacheWrite) parts.push(theme.fg("dim", `W${formatTokens(totals.cacheWrite)}`));
+	if ((totals.cacheRead > 0 || totals.cacheWrite > 0) && cacheHitRate !== undefined) {
+		parts.push(theme.fg("dim", `CH${cacheHitRate.toFixed(1)}%`));
+	}
+	// Kimi Coding is subscription-backed despite using API-key authentication.
+	const usingSubscription = provider === "kimi-coding";
+	if (totals.cost || usingSubscription) {
+		parts.push(
+			theme.fg("dim", `$${totals.cost.toFixed(3)}${usingSubscription ? " (sub)" : ""}`),
+		);
+	}
 	return parts;
 }
 
@@ -307,9 +390,13 @@ function renderFooterLines(
 	const windowTokens = context?.contextWindow ?? model?.contextWindow ?? 0;
 	const level = (ctx.thinkingLevel ?? "off") as ThinkingLevel;
 
+	const { totals, cacheHitRate } = computeUsage(
+		ctx.sessionManager.getEntries(),
+	);
+
 	const left = [
-		...statsSegment(theme, computeUsageTotals(ctx.sessionManager.getEntries())),
-		contextMeter(theme, context, windowTokens),
+		...statsSegment(theme, totals, cacheHitRate, model?.provider),
+		contextMeter(theme, context, windowTokens, autoCompactEnabled),
 	].join(" ");
 
 	let right = modelSegment(theme, model, level);
@@ -321,9 +408,12 @@ function renderFooterLines(
 	}
 
 	const lines = [
-		pwdLine(ctx, footerData, theme, width),
+		promptLine(ctx, footerData, theme, width),
 		composeLine(left, right, width),
 	];
+	if (process.env.PI_EXPERIMENTAL === "1") {
+		lines.push(theme.bold(theme.fg("warning", "xp")));
+	}
 	const statusLine = extensionStatusLine(theme, footerData, width);
 	if (statusLine) lines.push(statusLine);
 	return lines;
@@ -331,16 +421,27 @@ function renderFooterLines(
 
 // ── extension wiring ──────────────────────────────────────────────────────────
 
+let autoCompactEnabled = true;
+
 export default function (pi: ExtensionAPI) {
 	let enabled = true;
 	let requestRerender: (() => void) | undefined;
+	let clockTimer: ReturnType<typeof setInterval> | undefined;
 
 	function install(ctx: ExtensionContext) {
+		autoCompactEnabled = readAutoCompactionEnabled();
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			requestRerender = () => tui.requestRender();
 			const unsubscribe = footerData.onBranchChange(() => tui.requestRender());
+			// Keep the clock in the prompt line ticking.
+			clearInterval(clockTimer);
+			clockTimer = setInterval(() => requestRerender?.(), 1000);
 			return {
-				dispose: unsubscribe,
+				dispose: () => {
+					unsubscribe();
+					clearInterval(clockTimer);
+					clockTimer = undefined;
+				},
 				invalidate() {},
 				render: (width: number) => renderFooterLines(ctx, theme, footerData, width),
 			};
