@@ -3,9 +3,12 @@
  *
  * Replaces the built-in footer with:
  *
- *   ~/project (main) · my-session                          ← cwd (yellow) + git branch + session name
+ *   ~/project (main✗) · my-session                        ← cwd (yellow) + git branch (✗ if dirty) + session name
  *   ↑1.2k ↓30k R89% $0.42 ██░░░░░░░░ 27%/900k    🧠 high · glm-5.3 (tai)
  *   <other extensions' ctx.ui.setStatus() texts preserved>  ← only if any
+ *
+ * - git branch shows a ✗ warning marker when the worktree is dirty
+ *   (merged from cc-status).
  *
  * - 🧠 thinking level uses the theme's per-level color (thinkingLow /
  *   thinkingHigh / thinkingMax ...) and updates live: shift+tab cycling,
@@ -21,6 +24,7 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { execSync } from "node:child_process";
 
 type ThinkingLevel =
 	| "off"
@@ -109,6 +113,39 @@ function sanitizeStatusText(text: string): string {
 		.trim();
 }
 
+/**
+ * Check if the git worktree at `cwd` is dirty.
+ * Cached briefly so a footer render never shells out more than once per
+ * few seconds (merged from cc-status).
+ */
+const DIRTY_CACHE_MS = 3000;
+let dirtyCache: { cwd: string; dirty: boolean; at: number } | undefined;
+
+function isGitDirty(cwd: string): boolean {
+	const now = Date.now();
+	if (
+		dirtyCache &&
+		dirtyCache.cwd === cwd &&
+		now - dirtyCache.at < DIRTY_CACHE_MS
+	) {
+		return dirtyCache.dirty;
+	}
+	let dirty = false;
+	try {
+		const out = execSync("git status --porcelain", {
+			cwd,
+			encoding: "utf8",
+			timeout: 2000,
+			stdio: ["ignore", "pipe", "ignore"],
+		});
+		dirty = out.trim().length > 0;
+	} catch {
+		dirty = false;
+	}
+	dirtyCache = { cwd, dirty, at: now };
+	return dirty;
+}
+
 function usageColor(percent: number): FooterColor {
 	if (percent > 90) return "error";
 	if (percent > 70) return "warning";
@@ -154,7 +191,14 @@ function pwdLine(
 ): string {
 	let pwd = theme.fg("warning", formatCwd(ctx.cwd));
 	const branch = footerData.getGitBranch();
-	if (branch) pwd += theme.fg("dim", ` (${branch})`);
+	if (branch) {
+		const dirty = isGitDirty(ctx.cwd);
+		let branchPart = ` (${branch})`;
+		if (dirty) branchPart += "✗";
+		pwd +=
+			theme.fg("dim", branchPart.slice(0, 1)) +
+			theme.fg(dirty ? "warning" : "dim", branchPart.slice(1));
+	}
 	const sessionName = ctx.sessionManager.getSessionName();
 	if (sessionName) pwd += theme.fg("dim", ` · ${sessionName}`);
 	return truncateToWidth(pwd, width, theme.fg("dim", "…"));
