@@ -4,7 +4,7 @@
 	"vars": {},
 	"colors": {
 		"accent": 13,
-		"border": 8,
+		"border": 6,
 		"borderAccent": 6,
 		"borderMuted": 8,
 		"success": 10,
@@ -27,8 +27,8 @@
 		"toolPendingBg": "",
 		"toolSuccessBg": "",
 		"toolErrorBg": "",
-		"toolTitle": "",
-		"toolOutput": 7,
+		"toolTitle": 6,
+		"toolOutput": 8,
 
 		"mdHeading": 15,
 		"mdLink": 6,
