@@ -111,8 +111,10 @@ export default function (pi: ExtensionAPI) {
 	const heartbeat = () => {
 		if (!myId) return;
 		try {
-			const reg: Registration = JSON.parse(fs.readFileSync(regPath(myId), "utf8"));
-			fs.writeFileSync(regPath(myId), JSON.stringify(reg, null, 2));
+			// Touch the registration file's mtime (metadata-only, no content
+		// rewrite, so /msg-name renames can never be raced and clobbered).
+			const now = new Date();
+			fs.utimesSync(regPath(myId), now, now);
 		} catch {
 			/* session not registered yet / already shut down */
 		}
