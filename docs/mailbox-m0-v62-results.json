@@ -1,0 +1,120 @@
+{
+  "design": "v6.2",
+  "status": "not_passed",
+  "root": "/tmp/mailbox-m0-v62-l9ukma7_",
+  "python": "3.14.7",
+  "platform": "linux",
+  "outcomes": [
+    {
+      "case": "6_backlog",
+      "result": "pass_in_spike",
+      "batches": [
+        [
+          "m-00",
+          "m-01"
+        ],
+        [
+          "m-02",
+          "m-03"
+        ],
+        [
+          "m-04",
+          "m-05"
+        ],
+        [
+          "m-06",
+          "m-07"
+        ],
+        [
+          "m-08",
+          "m-09"
+        ]
+      ],
+      "limitWithoutConsumptionPreserved": true,
+      "logUnchanged": true
+    },
+    {
+      "case": "7_commit_crash",
+      "result": "pass_in_spike",
+      "observations": [
+        {
+          "killAt": "after_emit",
+          "nextCheck": [
+            "m-00",
+            "m-01"
+          ],
+          "replayRecovered": true,
+          "lockReleasedByProcessDeath": true,
+          "logUnchanged": true
+        },
+        {
+          "killAt": "after_commit",
+          "nextCheck": [],
+          "replayRecovered": true,
+          "lockReleasedByProcessDeath": true,
+          "logUnchanged": true
+        }
+      ]
+    },
+    {
+      "case": "8_replay_without_new_writes",
+      "result": "pass_in_spike",
+      "selectedReplay": [
+        "m-00"
+      ],
+      "allReplayCount": 4,
+      "fingerprintUnchanged": true
+    },
+    {
+      "case": "8_concurrent_check_replay",
+      "result": "pass_in_spike",
+      "replayWaitedForLock": true,
+      "replayIntentPreserved": true
+    },
+    {
+      "case": "9_v62_loop_interleaving",
+      "result": "design_failure_reproduced",
+      "schedule": [
+        "A prefix",
+        "B complete record",
+        "A remainder"
+      ],
+      "validRecords": 0,
+      "badLines": 2
+    },
+    {
+      "case": "9_v62_next_append_no_isolation",
+      "result": "design_failure_reproduced",
+      "validRecords": 0,
+      "badLines": 1
+    },
+    {
+      "case": "9_candidate_writer_lock_and_tail_separator",
+      "result": "pass_in_spike",
+      "failedSendRaisedError": true,
+      "partialBytesPreserved": true,
+      "laterRecordsReadable": [
+        "m-01",
+        "m-00"
+      ],
+      "badLinesReported": 1
+    },
+    {
+      "case": "9_candidate_parallel_short_writes",
+      "result": "pass_in_spike",
+      "writers": 4,
+      "records": 100,
+      "chunkBytes": 7,
+      "badLines": 0
+    }
+  ],
+  "limitations": [
+    "Policy spike in Python, not production Node mailbox-core.",
+    "Opaque fixture IDs and a full seen set: SAMP ID/cursor compatibility is not tested.",
+    "No Codex hook, task side effect, alias ownership or power-loss durability tested.",
+    "Candidate writer locking is a proposed correction beyond v6.2, not an implemented production fix.",
+    "Replay clears transport seen state; application-side idempotency is a separate requirement."
+  ],
+  "date": "2026-09-20",
+  "probeSha256": "1b268e1eba7381a07f143df0a632a622dfb63bb347ac699787e589b5d6fce005"
+}

@@ -1,0 +1,137 @@
+{
+  "date": "2026-09-20",
+  "milestone": "M0",
+  "status": "not_passed",
+  "host": {
+    "version": "codex-cli 0.153.3",
+    "hostPid": 21,
+    "threadIds": [
+      "01a0bb19-be4c-77b2-a1ee-deef48fbdb25",
+      "01a0bb19-be6a-72e2-9d30-0692d52da46c"
+    ],
+    "loadedThreads": {
+      "data": [
+        "01a0bb19-be4c-77b2-a1ee-deef48fbdb25",
+        "01a0bb19-be6a-72e2-9d30-0692d52da46c"
+      ],
+      "nextCursor": null
+    },
+    "hookCountBeforeFirstTurn": 0,
+    "hooks": [
+      {
+        "input": {
+          "session_id": "01a0bb19-be6a-72e2-9d30-0692d52da46c",
+          "transcript_path": "/tmp/mailbox-m0-host-86tky1tm/codex-home/sessions/2026/09/20/rollout-2026-09-20T03-17-01-01a0bb19-be6a-72e2-9d30-0692d52da46c.jsonl",
+          "cwd": "/tmp/mailbox-m0-host-86tky1tm",
+          "hook_event_name": "SessionStart",
+          "model": "gpt-5.6-sol",
+          "permission_mode": "bypassPermissions",
+          "source": "clear"
+        },
+        "hostAncestor": {
+          "pid": 21,
+          "ppid": 2,
+          "startTicks": "9907325",
+          "exe": "/home/cherrling/.codex/packages/standalone/releases/0.153.3-x86_64-unknown-linux-musl/bin/codex"
+        }
+      },
+      {
+        "input": {
+          "session_id": "01a0bb19-be4c-77b2-a1ee-deef48fbdb25",
+          "transcript_path": "/tmp/mailbox-m0-host-86tky1tm/codex-home/sessions/2026/09/20/rollout-2026-09-20T03-17-01-01a0bb19-be4c-77b2-a1ee-deef48fbdb25.jsonl",
+          "cwd": "/tmp/mailbox-m0-host-86tky1tm",
+          "hook_event_name": "SessionStart",
+          "model": "gpt-5.6-sol",
+          "permission_mode": "bypassPermissions",
+          "source": "startup"
+        },
+        "hostAncestor": {
+          "pid": 21,
+          "ppid": 2,
+          "startTicks": "9907325",
+          "exe": "/home/cherrling/.codex/packages/standalone/releases/0.153.3-x86_64-unknown-linux-musl/bin/codex"
+        }
+      }
+    ],
+    "rawReport": "/tmp/mailbox-m0-host-86tky1tm/report.json"
+  },
+  "local": {
+    "root": "/tmp/mailbox-m0-local-8vslYe",
+    "node": "v22.23.2",
+    "platform": "linux/x64",
+    "checks": [
+      {
+        "name": "current unregister deletes unread messages, delivered.log and overflow",
+        "result": "reproduced"
+      },
+      {
+        "name": "current dead-session cleanup deletes the same archive",
+        "result": "reproduced"
+      },
+      {
+        "name": "current resolver silently accepts duplicate exact names",
+        "result": "reproduced"
+      }
+    ],
+    "backlogModel": [
+      {
+        "delivered": 2,
+        "pending": 10
+      },
+      {
+        "delivered": 2,
+        "pending": 8
+      },
+      {
+        "delivered": 0,
+        "pending": 8
+      },
+      {
+        "delivered": 2,
+        "pending": 6
+      },
+      {
+        "delivered": 2,
+        "pending": 4
+      },
+      {
+        "delivered": 2,
+        "pending": 2
+      },
+      {
+        "delivered": 2,
+        "pending": 0
+      }
+    ],
+    "limitations": [
+      "Backlog is a policy model, not a Codex end-to-end test.",
+      "No host receipt ACK, crash durability, concurrent delivery, or model ACK compliance is established."
+    ]
+  },
+  "benchmark": {
+    "root": "/tmp/mailbox-m0-bench-hh5rdg6x",
+    "node": "v22.23.2",
+    "nodeJsonAndEmptyPeek": {
+      "samples": 50,
+      "medianMs": 22.53,
+      "p95Ms": 25.56
+    },
+    "bashStartupAndGlobOnly": {
+      "samples": 50,
+      "medianMs": 1.56,
+      "p95Ms": 2.57
+    },
+    "limitations": [
+      "Bash does not parse JSON; the two probes are not equivalent implementations.",
+      "No identity lookup, heartbeat, lock, fsync, rendering or nonempty-inbox cost measured."
+    ]
+  },
+  "sourceSha256": "28741720138badc4496518d3a9f0743d84cbee12cdb28ff98c57b7ecbc963772",
+  "notTested": [
+    "TUI /new",
+    "PostToolUse/Stop runtime inputs and repeated blocking",
+    "idle mailbox delivery",
+    "model ACK compliance",
+    "crash durability and concurrent delivery"
+  ]
+}
