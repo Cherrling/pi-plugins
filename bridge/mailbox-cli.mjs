@@ -14,8 +14,11 @@
  *   replay   <id> | --all              force redelivery
  *   whoami
  *
- * Identity: --as <alias> or MAILBOX_ALIAS. Unresolvable identity or an
- * ambiguous recipient is a hard error — never write to the wrong box.
+ * Identity: --as <alias> > MAILBOX_ALIAS > CODEX_SESSION_NAME > "codex".
+ * Hooks inherit the codex process env, so launching codex with
+ * CODEX_SESSION_NAME=<name> names its mailbox without any shell expansion
+ * in hooks.json. Unresolvable identity or an ambiguous recipient is a hard
+ * error — never write to the wrong box.
  */
 
 import fs from "node:fs";
@@ -53,7 +56,8 @@ const argv = process.argv.slice(2);
 const cmd = argv[0];
 const { flags, pos } = parse(argv.slice(1));
 
-const alias = flags.as || process.env.MAILBOX_ALIAS;
+const alias =
+	flags.as || process.env.MAILBOX_ALIAS || process.env.CODEX_SESSION_NAME || "codex";
 const mb = new Mailbox();
 
 function requireAlias() {

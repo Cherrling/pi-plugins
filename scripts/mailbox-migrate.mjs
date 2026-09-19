@@ -12,6 +12,10 @@
  * - Recipient alias comes from the inbox directory's registration name.
  * - Sender alias comes from the message's fromName (registered at the time).
  * - All migrated messages are UNREAD (legacy inbox only ever held unread).
+ * - Migrated inbox files are REMOVED after a successful append, so running
+ *   the script again (finalize after the upgrade window) only picks up
+ *   messages that arrived in the meantime — never duplicates. Backups of
+ *   the whole mailbox dir are kept before every run.
  * - Old-format registrations are removed; sessions re-register on restart.
  *   New-format registrations (log era, have `kind`) are left untouched.
  * - Refuses to run if any log-*.jsonl already exists (unless --force).
@@ -106,6 +110,9 @@ if (fs.existsSync(inboxesDir)) {
 			const line = JSON.stringify(rec) + "\n";
 			fs.appendFileSync(path.join(dir, `log-${from}.jsonl`), line);
 			migrated++;
+			// remove the migrated file so re-running finalize is idempotent
+			// (no message is migrated twice; backups still hold the original)
+			fs.unlinkSync(path.join(inbox, f));
 		}
 	}
 }

@@ -150,7 +150,7 @@ task 模板 bug（v2 发现的原版指引 send_session_message）在此一并�
 |---|---|---|
 | M0 | ① Stop/PostToolUse stdin 字段实测；② 空闲滞留确认；③ 真实连续 Stop block 行为；④ `mailbox check` 完整基准（v6.1：撤销 <5ms 预估——已实测空路径中位数 22.53ms，mtime 短路只减解析不减 Node 启动，基准目标改为"无回归 + 可接受"）；⑤ writable_roots 接线验证；⑥ **十条积压、无新增写入仍能读完**（短路饿死修复的验收）；⑦ **水位线提交前后故障注入**（注入后杀进程，验证 replay 恢复）；⑧ **replay 后短路确实失效**（全部读完 → replay → 无新增写入 → 重投发生）；⑨ **短写注入**（模拟 write 部分落盘，验证补写/丢弃策略与尾行隔离） | ①③④⑥⑦⑧⑨ 有结论 |
 | M1 ✅（2026-09-20，mailbox-m1-report.md） | mailbox-core + pi 扩展切换数据层 + 自包含安装 + 迁移脚本 | pi↔pi 闭环/忙闲/改名实测通过；已部署 |
-| M2 | mailbox-cli + codex hooks + AGENTS.md | pi dispatch → codex 收到并 report 闭环；双 codex 会话互不串名；并发 send 压测无交错 |
+| M2 ✅（2026-09-20，mailbox-m2-report.md） | codex 接入包：合并式安装器 + hooks + AGENTS.md + writable_roots | 端到端九项全过（双向消息/闭环/双 codex 隔离/空闲补投）；实际接线待用户确认 |
 | M3（可选） | mailbox-mcp；TIOCSTI 空闲唤醒调研（AMQ 已验证可行，实验性）；SAMP 互通 | — |
 
 旧 inbox（`inboxes/<id>/*.json`）迁移：写一次性脚本转成日志行；

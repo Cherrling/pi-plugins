@@ -157,6 +157,40 @@ run("legacy-migration", async (box) => {
 	if (got.length !== 2) throw new Error(`main should read 2 migrated, got ${got.length}`);
 });
 
+// 3b) finalize idempotency: window arrivals only, no duplicates
+run("finalize-idempotent", async (box) => {
+	const sess = path.join(box, "sessions");
+	const inb = path.join(box, "inboxes", "01a0bb01-7764-7056-8563-d0c8427f538d");
+	fs.mkdirSync(sess, { recursive: true });
+	fs.mkdirSync(inb, { recursive: true });
+	fs.writeFileSync(
+		path.join(sess, "01a0bb01-7764-7056-8563-d0c8427f538d.json"),
+		JSON.stringify({ id: "01a0bb01-7764-7056-8563-d0c8427f538d", name: "main", pid: 1, cwd: "/tmp" }),
+	);
+	const old = (text, ts) =>
+		JSON.stringify({ fromId: "02b1cc02", fromName: "old-worker", type: "chat", text, ts }) + "\n";
+	fs.writeFileSync(path.join(inb, "100-a.json"), old("first batch 1", 1690000000000));
+	fs.writeFileSync(path.join(inb, "101-b.json"), old("first batch 2", 1690000001000));
+	// first run (initial migration)
+	let r = spawnSync(process.execPath, [MIGRATE, box], { encoding: "utf8" });
+	if (r.status !== 0) throw new Error(`first migrate failed: ${r.stderr}`);
+	// upgrade window: two MORE legacy messages arrive
+	fs.writeFileSync(path.join(inb, "102-c.json"), old("window arrival 1", 1690000005000));
+	fs.writeFileSync(path.join(inb, "103-d.json"), old("window arrival 2", 1690000006000));
+	// finalize (re-run with --force because logs exist now)
+	r = spawnSync(process.execPath, [MIGRATE, box, "--force"], { encoding: "utf8" });
+	if (r.status !== 0) throw new Error(`finalize failed: ${r.stderr}`);
+	const log = fs.readFileSync(path.join(box, "log-old-worker.jsonl"), "utf8").split("\n").filter((l) => l);
+	if (log.length !== 4) throw new Error(`want 4 total records, got ${log.length}`);
+	const bodies = log.map((l) => JSON.parse(l).body);
+	for (const want of ["first batch 1", "first batch 2", "window arrival 1", "window arrival 2"])
+		if (!bodies.includes(want)) throw new Error(`missing ${want}`);
+	if (new Set(bodies).size !== 4) throw new Error("duplicate bodies after finalize");
+	// inbox now empty
+	const left = fs.readdirSync(inb).filter((f) => f.endsWith(".json"));
+	if (left.length !== 0) throw new Error(`inbox not drained: ${left.join(",")}`);
+});
+
 // 4) self-contained install: extension imports resolve from the plugin dir
 run("plugin-self-contained", async () => {
 	const ext = path.join(ROOT, "plugins", "session-messaging", "index.ts");
