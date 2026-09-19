@@ -24,14 +24,21 @@ node bridge/codex/install.mjs --no-bin   # 不装 ~/.local/bin/mailbox shim
 
 ## 会话命名
 
-hooks 的身份来自 codex 进程环境（**不经 shell 展开**，hooks.json 里没有 `$VAR`）：
+三种方式，按灵活度递增：
 
 ```bash
-CODEX_SESSION_NAME=kernel-worker codex   # 别名 kernel-worker
-codex                                    # 默认别名 "codex"
+codex                                    # 1. 默认别名 "codex"
+CODEX_SESSION_NAME=kernel-worker codex   # 2. 启动时预命名（可选，不喜欢环境变量可跳过）
+# 会话内任意时刻：                          # 3. 交互式改名（推荐）
+#   mailbox rename kernel-audit
 ```
 
-多 codex 会话并跑必须起不同名字；别名冲突时 register 报错（fail-open，不阻塞 codex）。
+交互式改名的机制：SessionStart hook 把 session_id → 别名的映射写进
+`mailbox/.names/`（同时记录 codex 宿主 pid）；`mailbox rename` 从自己的
+祖先进程链找到宿主、定位映射，然后重注册 + 水位线迁移 + 历史别名保留
+（旧名收件继续投递）。改名后 hooks 投递、whoami、list 全部跟新名走。
+
+别名冲突时 register/rename 报错；多 codex 会话并跑各起不同名字。
 
 ## 卸载 / 回滚
 

@@ -39,6 +39,40 @@ export function defaultDir() {
 	return process.env.MAILBOX_DIR || path.join(os.homedir(), ".pi", "agent", "mailbox");
 }
 
+/** Walk /proc up to init; returns all ancestor pids incl. self. */
+export function ancestorPids(limit = 20) {
+	const out = [process.pid];
+	let pid = process.pid;
+	for (let i = 0; i < limit; i++) {
+		let stat;
+		try {
+			stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+		} catch {
+			break;
+		}
+		const after = stat.slice(stat.lastIndexOf(")") + 2);
+		const ppid = Number(after.split(" ")[1]);
+		if (!ppid || ppid <= 1) break;
+		out.push(ppid);
+		pid = ppid;
+	}
+	return out;
+}
+
+/** First ancestor whose cmdline mentions codex (the session host), or null.
+ *  Skips self so a mailbox-cli path containing "codex" (e.g. bridge/codex/)
+ *  never matches. */
+export function findCodexHostPid() {
+	for (const pid of ancestorPids()) {
+		if (pid === process.pid) continue;
+		try {
+			const cmd = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8");
+			if (cmd.includes("codex") && !cmd.includes("mailbox-cli")) return pid;
+		} catch {}
+	}
+	return null;
+}
+
 export class Mailbox {
 	constructor(dir = defaultDir()) {
 		this.dir = dir;
@@ -333,7 +367,12 @@ export class Mailbox {
 		} catch {
 			return "{}";
 		}
-		const reader = alias || process.env.MAILBOX_ALIAS || inp.session_id;
+		const reader =
+			this.readNameMap(inp.session_id)?.alias || // session-name map (rename-aware)
+			alias ||
+			process.env.MAILBOX_ALIAS ||
+			process.env.CODEX_SESSION_NAME ||
+			inp.session_id;
 		if (!reader || !ALIAS_RE.test(reader)) return "{}";
 		const turnKey = `${inp.session_id || reader}:${inp.turn_id || "no-turn"}`;
 
@@ -440,6 +479,72 @@ export class Mailbox {
 		} catch {
 			return false;
 		}
+	}
+
+	/**
+	 * Interactive rename: re-register under the new name, carry the
+	 * watermark + alias history, update the session-name map, drop the old
+	 * registration when it is dead or ours. Prefer the codex host pid for
+	 * the new registration (better liveness display than a hook pid).
+	 */
+	renameSession({ from, to, hostPid, sessionId }) {
+		if (!ALIAS_RE.test(to)) throw new Error(`bad alias: ${to}`);
+		this.register({ name: to, kind: "external", pid: hostPid || process.pid });
+		const moved = this.renameReader(from, to);
+		const old = path.join(this.sessionsDir, `${from}.json`);
+		try {
+			const reg = JSON.parse(fs.readFileSync(old, "utf8"));
+			if (!this.#pidAlive(reg.pid) || reg.pid === hostPid) fs.unlinkSync(old);
+		} catch {}
+		if (sessionId) this.writeNameMap(sessionId, { alias: to, hostPid: hostPid ?? null });
+		return { from, to, moved };
+	}
+
+	// ── codex session-name map (interactive rename) ───────────────
+	// Keyed by codex session_id (hooks carry it on stdin). Each entry also
+	// remembers the codex host pid so a shell-side `mailbox rename` (no
+	// stdin) can find its session by walking its own ancestor chain.
+
+	namesPath(sessionId) {
+		return path.join(this.dir, ".names", `${sessionId}.json`);
+	}
+
+	readNameMap(sessionId) {
+		if (!sessionId) return null;
+		try {
+			return JSON.parse(fs.readFileSync(this.namesPath(sessionId), "utf8"));
+		} catch {
+			return null;
+		}
+	}
+
+	writeNameMap(sessionId, entry) {
+		if (!sessionId) return;
+		fs.mkdirSync(path.join(this.dir, ".names"), { recursive: true });
+		const p = this.namesPath(sessionId);
+		const tmp = `${p}.tmp-${process.pid}`;
+		fs.writeFileSync(tmp, JSON.stringify(entry));
+		fs.renameSync(tmp, p);
+	}
+
+	findNameMapByAncestors(pids) {
+		const set = new Set(pids);
+		const dir = path.join(this.dir, ".names");
+		let files = [];
+		try {
+			files = fs.readdirSync(dir);
+		} catch {
+			return null;
+		}
+		for (const f of files) {
+			if (!f.endsWith(".json")) continue;
+			try {
+				const e = JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
+				if (e.hostPid && set.has(e.hostPid))
+					return { sessionId: f.slice(0, -5), ...e };
+			} catch {}
+		}
+		return null;
 	}
 
 	receiverKind(alias) {

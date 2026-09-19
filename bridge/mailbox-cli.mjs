@@ -22,7 +22,7 @@
  */
 
 import fs from "node:fs";
-import { Mailbox } from "../shared/mailbox/core.mjs";
+import { Mailbox, ancestorPids, findCodexHostPid } from "../shared/mailbox/core.mjs";
 import { newTaskId, renderIncoming } from "../shared/mailbox/protocol.mjs";
 
 const VALUE_FLAGS = new Set(["--as", "--name", "--kind", "--limit", "--mode", "--pid"]);
@@ -68,9 +68,24 @@ function requireAlias() {
 async function main() {
 	switch (cmd) {
 		case "register": {
-			const name = flags.name || requireAlias();
-			const pid = flags.pid ? Number(flags.pid) : process.pid;
+			// SessionStart hook context: stdin carries {session_id, ...}.
+			// Identity priority: existing session-name map (rename wins over
+			// env) > --name > MAILBOX_ALIAS > CODEX_SESSION_NAME > "codex".
+			let sessionId = null;
+			try {
+				if (!process.stdin.isTTY) {
+					const s = fs.readFileSync(0, "utf8");
+					sessionId = JSON.parse(s)?.session_id ?? null;
+				}
+			} catch {}
+			const hostPid = findCodexHostPid();
+			let existing = mb.readNameMap(sessionId);
+			if (!existing && hostPid) existing = mb.findNameMapByAncestors(ancestorPids());
+			const name = existing?.alias || flags.name || process.env.MAILBOX_ALIAS ||
+				process.env.CODEX_SESSION_NAME || "codex";
+			const pid = flags.pid ? Number(flags.pid) : hostPid || process.pid;
 			const reg = mb.register({ name, kind: flags.kind || "external", pid });
+			if (sessionId) mb.writeNameMap(sessionId, { alias: name, hostPid });
 			// hooks parse stdout as hook-output JSON — keep it empty unless asked
 			if (flags.quiet) process.stderr.write(`mailbox: registered ${reg.name}\n`);
 			else console.log(JSON.stringify(reg));
@@ -192,8 +207,41 @@ async function main() {
 			console.log(JSON.stringify(r));
 			break;
 		}
+		case "rename": {
+			const to = pos[0];
+			if (!to) fail("rename requires: <new-alias>  (或 --as <当前别名> <新别名>)");
+			// Resolve current identity, in priority order:
+			//   1. --as <alias> (explicit, tests/scripts)
+			//   2. session-name map via CODEX_SESSION_ID env (codex exports it
+			//      to tool shells — reliable even inside the sandbox)
+			//   3. map via ancestor walk (hook-side fallback)
+			//   4. env alias chain
+			let from = flags.as || null;
+			let sessionId = null;
+			let hostPid = findCodexHostPid();
+			let found = mb.readNameMap(process.env.CODEX_SESSION_ID);
+			if (found) sessionId = process.env.CODEX_SESSION_ID;
+			if (!found) {
+				found = mb.findNameMapByAncestors(ancestorPids());
+				if (found) sessionId = found.sessionId;
+			}
+			if (found) {
+				hostPid = hostPid || found.hostPid;
+				if (!from) from = found.alias;
+			}
+			if (!from)
+				from = process.env.MAILBOX_ALIAS || process.env.CODEX_SESSION_NAME || null;
+			if (!from) fail("cannot determine current alias — 在 codex 会话内运行，或用 --as <当前别名>");
+			const r = mb.renameSession({ from, to, hostPid, sessionId });
+			process.stderr.write(`mailbox: renamed ${r.from} -> ${r.to} (未读消息跟随)\n`);
+			console.log(JSON.stringify(r));
+			break;
+		}
 		case "whoami": {
-			console.log(JSON.stringify({ alias: alias ?? null }));
+			const found =
+				mb.readNameMap(process.env.CODEX_SESSION_ID) ||
+				mb.findNameMapByAncestors(ancestorPids());
+			console.log(JSON.stringify({ alias: found?.alias || alias }));
 			break;
 		}
 		default:

@@ -114,7 +114,8 @@ const block = `${BEGIN}
 - 发消息：\`mailbox send <别名> <文本>\`
 - 派任务：\`mailbox dispatch <别名> <任务>\`（会得到 taskId）
 - 回报任务：\`mailbox report <别名> <taskId> <结果>\`——收到 📋 任务消息后完成后必须回报
-- 你的别名：\`mailbox whoami\`（默认 codex；多会话并跑时启动前 export CODEX_SESSION_NAME=<别名>）
+- 你的别名：\`mailbox whoami\`（默认 codex）
+- 交互式改名：\`mailbox rename <新别名>\`——立即生效，未读消息跟随；多会话并跑时各自起不同名字
 - 注入的消息带唯一 id，同 id 重复出现直接忽略（尽力投递可能重放）
 - 长内容会被截断为附件引用，按消息里的路径读取全文
 ${END}`;
