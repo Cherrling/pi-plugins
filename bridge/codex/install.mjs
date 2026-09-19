@@ -79,7 +79,7 @@ if (fs.existsSync(hooksPath)) {
 }
 hooks.hooks = hooks.hooks || {};
 const ours = {
-	SessionStart: `${NODE} ${CLI} register --kind external`,
+	SessionStart: `${NODE} ${CLI} register --kind external --quiet`,
 	PostToolUse: `${NODE} ${CLI} check --mode posttooluse`,
 	Stop: `${NODE} ${CLI} check --mode stop`,
 };

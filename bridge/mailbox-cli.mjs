@@ -70,9 +70,10 @@ async function main() {
 		case "register": {
 			const name = flags.name || requireAlias();
 			const pid = flags.pid ? Number(flags.pid) : process.pid;
-			console.log(
-				JSON.stringify(mb.register({ name, kind: flags.kind || "external", pid })),
-			);
+			const reg = mb.register({ name, kind: flags.kind || "external", pid });
+			// hooks parse stdout as hook-output JSON — keep it empty unless asked
+			if (flags.quiet) process.stderr.write(`mailbox: registered ${reg.name}\n`);
+			else console.log(JSON.stringify(reg));
 			break;
 		}
 		case "list": {
