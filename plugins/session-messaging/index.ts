@@ -1,138 +1,117 @@
 /**
  * Session Messaging Extension — multi-session orchestration for pi.
  *
- * Architecture (see src/ for modules):
- *   mailbox.ts   pure data layer: registration dir, heartbeat, inboxes
- *   protocol.ts  message types (chat/task/result) + prompt templates
- *   peek.ts      read-only transcript monitoring for boss sessions
+ * M1: data layer switched to the formal shared mailbox-core
+ * (SAMP append-only logs + watermark, same storage as codex side).
+ * Commands, tools, polling/followUp delivery behavior are unchanged.
  *
- * Human commands:
- *   /msg-name <name>    name this session (used by peers to find you)
- *   /msg-sessions       list online sessions (name, state, cwd)
+ * Layout (self-contained; cp -r this dir to ~/.pi/agent/extensions/):
+ *   index.ts            this file — pi extension assembly
+ *   src/peek.ts         read-only transcript monitor (pi session jsonl)
+ *   src/shared/*.mjs    GENERATED from shared/mailbox/ (scripts/sync-shared.sh)
  *
- * Agent tools:
- *   send_session_message(to, text)             chat message to a peer
- *   list_sessions()                            enumerate online peers
- *   dispatch_task(to, task)                    send a tracked task,
- *                                               expects a result with taskId
- *   report_task_result(to, taskId, result)     worker: report completion
- *   peek_session(to, lines)                    read another session's
- *                                               recent transcript (read-only)
+ * Storage (~/.pi/agent/mailbox, env MAILBOX_DIR overrides):
+ *   log-<alias>.jsonl       append-only, per sender, never deleted
+ *   .state/<alias>.json     watermark + backlog + block counters
+ *   sessions/<alias>.json   registry (name/kind/pid/cwd/sessionFile/state)
  */
 
 import { Type } from "@sinclair/typebox";
-import fs from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import {
-	HEARTBEAT_MS,
-	POLL_MS,
-	type Registration,
-	type SessionState,
-	drainInbox,
-	deliver,
-	ensureDirs,
-	heartbeat,
-	inboxDir,
-	listSessions,
-	regPath,
-	resolveTarget,
-	unregister,
-	updateRegistration,
-} from "./src/mailbox.js";
-import {
-	type Message,
-	newTaskId,
-	renderIncoming,
-} from "./src/protocol.js";
+import { Mailbox } from "./src/shared/core.mjs";
+import { newTaskId, renderIncoming } from "./src/shared/protocol.mjs";
 import { peekSession } from "./src/peek.js";
 
-export default function (pi: ExtensionAPI) {
-	let myId = "";
-	let myName = "";
-	let timer: ReturnType<typeof setInterval> | undefined;
+const POLL_MS = 3000;
+const DELIVER_LIMIT = 20;
 
-	const send = (type: Message["type"], to: string, text: string, taskId?: string): string => {
-		const target = resolveTarget(to);
-		if (!target) {
-			return `错误：找不到 session "${to}"。用 list_sessions 工具查看在线列表。`;
-		}
-		if (target.id === myId) {
-			return "错误：不能给自己发消息。";
-		}
-		deliver(target, {
-			fromId: myId,
-			fromName: myName,
-			type,
-			taskId,
-			text,
-		});
-		return `已发送给 ${target.name} (${target.id.slice(0, 8)})。`;
-	};
+export default function (pi: ExtensionAPI) {
+	let myAlias = "";
+	let timer: ReturnType<typeof setInterval> | undefined;
+	let mb = new Mailbox();
+
+	const send = (
+		type: "chat" | "task" | "result",
+		to: string,
+		text: string,
+		taskId?: string,
+	): Promise<string> =>
+		mb
+			.send({ from: myAlias, to, body: text, type, taskId })
+			.then(
+				(m) =>
+					`已发送给 ${to}（消息 id=${m.id.slice(0, 8)}）。`,
+			)
+			.catch((e: Error) => `错误：${e.message}`);
 
 	const deliverInbox = (ctx: ExtensionContext) => {
-		if (!myId) return;
-		const msgs = drainInbox(myId);
-		if (msgs.length === 0) return;
-		// Merge pending messages into ONE prompt to save agent turns.
-		const prompt = msgs.map((m) => renderIncoming(m)).join("\n\n---\n\n");
-		const hasTask = msgs.some((m) => m.type === "task");
-		if (hasTask) {
-			// Mark busy while a task is pending; the worker reports back
-			// and we flip to idle when a result is sent.
-			updateRegistration(myId, {
-				state: "busy" as SessionState,
-				busyTaskId: msgs.find((m) => m.type === "task")?.taskId,
-			});
-		}
-		if (ctx.isIdle()) {
-			pi.sendUserMessage(prompt);
-		} else {
-			// "followUp" queues the message until the agent finishes, never
-		// interrupting mid-stream. A worker's report or a boss's steer
-		// arrives after the current work completes — safe by default.
-			pi.sendUserMessage(prompt, { deliverAs: "followUp" });
-		}
-		const fromNames = [...new Set(msgs.map((m) => m.fromName))];
-		ctx.ui.notify(`📨 新消息来自 ${fromNames.join(", ")}`, "info");
+		if (!myAlias) return;
+		mb.heartbeat(myAlias);
+		void mb
+			.deliver(myAlias, {
+				limit: DELIVER_LIMIT,
+				emit: async (msgs, remaining) => {
+					let prompt = renderIncoming(msgs, "pi");
+					if (remaining > 0) prompt += `\n\n[另有 ${remaining} 条待投递]`;
+					const hasTask = msgs.some((m) => m.type === "task");
+					if (hasTask) {
+						try {
+							mb.updateSession(myAlias, {
+								state: "busy",
+								busyTaskId: msgs.find((m) => m.type === "task")?.taskId,
+							});
+						} catch {}
+					}
+					if (ctx.isIdle()) {
+						pi.sendUserMessage(prompt);
+					} else {
+						// followUp queues until the agent finishes — never interrupts
+						pi.sendUserMessage(prompt, { deliverAs: "followUp" });
+					}
+					const fromNames = [...new Set(msgs.map((m) => m.from))];
+					ctx.ui.notify(`📨 新消息来自 ${fromNames.join(", ")}`, "info");
+				},
+			})
+			.catch(() => {});
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
-		ensureDirs();
-		// session_start fires for /new too: drop the old timer and
-		// re-register under the new id.
+		mb = new Mailbox();
+		// session_start fires for /new too: drop registrations owned by this
+		// same process (safe — we own them), keep the new one, and carry the
+		// reader watermark over so unread messages survive /new.
+		const prevName = myAlias;
+		myAlias =
+			process.env.PI_SESSION_NAME?.trim() || ctx.sessionManager.getSessionId().slice(0, 8);
+		if (prevName && prevName !== myAlias) {
+			mb.unregisterOwnedBy(process.pid, { except: myAlias });
+			mb.renameReader(prevName, myAlias);
+		}
+		try {
+			mb.register({
+				name: myAlias,
+				kind: "pi",
+				pid: process.pid,
+				cwd: process.cwd(),
+				sessionFile: ctx.sessionManager.getSessionFile?.() ?? "",
+			});
+		} catch (e) {
+			// live foreign owner (name collision) — keep polling as reader anyway
+			ctx.ui.notify(`mailbox 注册失败：${(e as Error).message}`, "warning");
+		}
 		if (timer) clearInterval(timer);
-		const prevId = myId;
-		if (prevId) unregister(prevId);
-
-		myId = ctx.sessionManager.getSessionId();
-		// PI_SESSION_NAME can pre-assign a friendly name when the session is
-		// launched programmatically (e.g. via bash), else fall back to id prefix.
-		myName = process.env.PI_SESSION_NAME?.trim() || myId.slice(0, 8);
-		const reg: Registration = {
-			id: myId,
-			name: myName,
-			pid: process.pid,
-			cwd: process.cwd(),
-			sessionFile: ctx.sessionManager.getSessionFile?.() ?? "",
-			startedAt: Date.now(),
-			state: "idle",
-		};
-		fs.mkdirSync(inboxDir(myId), { recursive: true });
-		fs.writeFileSync(regPath(myId), JSON.stringify(reg, null, 2));
-
-		timer = setInterval(() => {
-			heartbeat(myId);
-			deliverInbox(ctx);
-		}, POLL_MS);
+		timer = setInterval(() => deliverInbox(ctx), POLL_MS);
 		timer.unref?.();
+		deliverInbox(ctx);
 	});
 
 	pi.on("session_shutdown", async () => {
 		if (timer) clearInterval(timer);
-		unregister(myId);
+		// registration removal only; logs and state stay (append-only design)
+		if (myAlias) mb.unregisterOwnedBy(process.pid);
 	});
 
-	// ── human commands ──────────────────────────────────────────────
+	// ── human commands ──────────────────────────────────────────
 
 	pi.registerCommand("msg-name", {
 		description: "给当前 session 起名字: /msg-name <name>",
@@ -142,30 +121,43 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify("用法: /msg-name <name>（不含空格）", "warning");
 				return;
 			}
-			myName = name;
-			updateRegistration(myId, { name });
-			ctx.ui.notify(`本 session 已命名为 "${name}"`, "info");
+			const old = myAlias;
+			try {
+				mb.register({
+					name,
+					kind: "pi",
+					pid: process.pid,
+					cwd: process.cwd(),
+				});
+				mb.renameReader(old, name);
+				if (old && old !== name) mb.unregisterOwnedBy(process.pid, { except: name });
+				myAlias = name;
+				ctx.ui.notify(`本 session 已命名为 "${name}"`, "info");
+			} catch (e) {
+				ctx.ui.notify(`命名失败：${(e as Error).message}`, "warning");
+			}
 		},
 	});
 
 	pi.registerCommand("msg-sessions", {
 		description: "列出在线的 pi session",
 		handler: async (_args, ctx) => {
-			const sessions = listSessions();
+			const sessions = mb.listSessions();
 			if (sessions.length === 0) {
 				ctx.ui.notify("没有在线的 session", "info");
 				return;
 			}
-			const lines = sessions.map((s) => {
-				const me = s.id === myId ? " (本会话)" : "";
+			const lines = sessions.map((s: any) => {
+				const me = s.name === myAlias ? " (本会话)" : "";
 				const state = s.state === "busy" ? " [忙]" : "";
-				return `${s.name}${state}  ${s.id.slice(0, 8)}  ${s.cwd}${me}`;
+				const dead = s.alive ? "" : " [离线]";
+				return `${s.name}${state}${dead}  ${s.cwd}${me}`;
 			});
 			ctx.ui.notify(lines.join("\n"), "info");
 		},
 	});
 
-	// ── agent tools ─────────────────────────────────────────────────
+	// ── agent tools ─────────────────────────────────────────────
 
 	pi.registerTool({
 		name: "send_session_message",
@@ -177,7 +169,9 @@ export default function (pi: ExtensionAPI) {
 			text: Type.String({ description: "消息内容" }),
 		}),
 		async execute(_toolCallId, { to, text }: { to: string; text: string }) {
-			return { details: undefined, content: [{ type: "text", text: send("chat", to, text) }] };
+			const target = safeResolve(to);
+			if (typeof target !== "string") return target;
+			return { details: undefined, content: [{ type: "text", text: await send("chat", target, text) }] };
 		},
 	});
 
@@ -185,15 +179,15 @@ export default function (pi: ExtensionAPI) {
 		name: "list_sessions",
 		label: "列出在线 session",
 		description:
-			"列出当前在线的其他 pi session（名字、忙/闲状态、工作目录），用于跨会话通信或派发任务前查找对象。",
+			"列出当前在线的其他 pi session（名字、忙闲状态、工作目录），用于跨会话通信或派发任务前查找对象。",
 		parameters: Type.Object({}),
 		async execute() {
-			const sessions = listSessions().filter((s) => s.id !== myId);
+			const sessions = mb.listSessions().filter((s: any) => s.name !== myAlias);
 			if (sessions.length === 0)
 				return { details: undefined, content: [{ type: "text", text: "没有其他在线 session。" }] };
 			const lines = sessions.map(
-				(s) =>
-					`${s.name}  ${s.state === "busy" ? "[忙]" : "[闲]"}  ${s.id.slice(0, 8)}  ${s.cwd}`,
+				(s: any) =>
+					`${s.name}  ${s.state === "busy" ? "[忙]" : "[闲]"}${s.alive ? "" : "[离线]"}  ${s.cwd}`,
 			);
 			return { details: undefined, content: [{ type: "text", text: lines.join("\n") }] };
 		},
@@ -210,23 +204,10 @@ export default function (pi: ExtensionAPI) {
 			task: Type.String({ description: "任务描述，要具体、自包含" }),
 		}),
 		async execute(_toolCallId, { to, task }: { to: string; task: string }) {
-			const target = resolveTarget(to);
-			if (!target) {
-				return {
-					details: undefined,
-					content: [
-						{
-							type: "text",
-							text: `错误：找不到 session "${to}"。用 list_sessions 工具查看在线列表。`,
-						},
-					],
-				};
-			}
-			if (target.id === myId) {
-				return { details: undefined, content: [{ type: "text", text: "错误：不能给自己派任务。" }] };
-			}
+			const target = safeResolve(to);
+			if (typeof target !== "string") return target;
 			const taskId = newTaskId();
-			const r = send("task", to, task, taskId);
+			const r = await send("task", target, task, taskId);
 			return {
 				details: undefined,
 				content: [
@@ -253,9 +234,13 @@ export default function (pi: ExtensionAPI) {
 			_toolCallId,
 			{ to, taskId, result }: { to: string; taskId: string; result: string },
 		) {
-			const r = send("result", to, result, taskId);
+			const target = safeResolve(to);
+			if (typeof target !== "string") return target;
+			const r = await send("result", target, result, taskId);
 			// Task closed: flip our own state back to idle.
-			updateRegistration(myId, { state: "idle", busyTaskId: undefined });
+			try {
+				mb.updateSession(myAlias, { state: "idle", busyTaskId: undefined });
+			} catch {}
 			return { details: undefined, content: [{ type: "text", text: r }] };
 		},
 	});
@@ -280,27 +265,38 @@ export default function (pi: ExtensionAPI) {
 			_toolCallId,
 			{ to, lines }: { to: string; lines?: number },
 		) {
-			const target = resolveTarget(to);
-			if (!target) {
+			const target = safeResolve(to);
+			if (typeof target !== "string") return target;
+			const reg = mb.listSessions().find((s: any) => s.name === target) as any;
+			if (!reg?.sessionFile)
 				return {
 					details: undefined,
-					content: [
-						{ type: "text", text: `错误：找不到 session "${to}"。` },
-					],
+					content: [{ type: "text", text: `错误：${target} 没有 sessionFile（非 pi 会话或未注册）。` }],
 				};
-			}
-			if (target.id === myId) {
-				return {
-					details: undefined,
-					content: [{ type: "text", text: "错误：不能 peek 自己。" }],
-				};
-			}
 			return {
 				details: undefined,
-				content: [
-					{ type: "text", text: peekSession(target, lines ?? 20) },
-				],
+				content: [{ type: "text", text: peekSession(reg, lines ?? 20) }],
 			};
 		},
 	});
+
+	// resolveTarget is fallible now (ambiguity errors) — tools must surface
+	// the error instead of throwing across the pi tool boundary.
+	function safeResolve(to: string) {
+		try {
+			const name = mb.resolveTarget(to);
+			if (name === myAlias) {
+				return {
+					details: undefined,
+					content: [{ type: "text", text: "错误：不能给自己发消息。" }],
+				};
+			}
+			return name;
+		} catch (e) {
+			return {
+				details: undefined,
+				content: [{ type: "text", text: `错误：${(e as Error).message}` }],
+			};
+		}
+	}
 }
