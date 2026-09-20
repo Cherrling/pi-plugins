@@ -22,7 +22,7 @@
  */
 
 import fs from "node:fs";
-import { Mailbox, ancestorPids, findCodexHostPid } from "../shared/mailbox/core.mjs";
+import { Mailbox, findCodexHostPid } from "../shared/mailbox/core.mjs";
 import { newTaskId, renderIncoming } from "../shared/mailbox/protocol.mjs";
 
 const VALUE_FLAGS = new Set(["--as", "--name", "--kind", "--limit", "--mode", "--pid"]);
@@ -56,13 +56,33 @@ const argv = process.argv.slice(2);
 const cmd = argv[0];
 const { flags, pos } = parse(argv.slice(1));
 
-const alias =
-	flags.as || process.env.MAILBOX_ALIAS || process.env.CODEX_SESSION_NAME || "codex";
 const mb = new Mailbox();
 
+/**
+ * Unified identity resolution (post-rename consistent across ALL commands):
+ *   --as > session-name map[CODEX_SESSION_ID] > MAILBOX_ALIAS > CODEX_SESSION_NAME > "codex"
+ * The map is what `mailbox rename` updates, so send/inbox/report/check/whoami
+ * all follow a rename immediately. No ancestor-pid inference: the same codex
+ * host can run multiple sessions (M0 finding), so pid continuity is unsound.
+ */
+function resolveIdentity() {
+	const sid = process.env.CODEX_SESSION_ID || null;
+	const mapEntry = sid ? mb.readNameMap(sid) : null;
+	return {
+		alias:
+			flags.as ||
+			mapEntry?.alias ||
+			process.env.MAILBOX_ALIAS ||
+			process.env.CODEX_SESSION_NAME ||
+			"codex",
+		sessionId: sid,
+		hostPid: findCodexHostPid(),
+		mapEntry,
+	};
+}
+
 function requireAlias() {
-	if (!alias) fail("no identity: pass --as <alias> or set MAILBOX_ALIAS");
-	return alias;
+	return resolveIdentity().alias;
 }
 
 async function main() {
@@ -79,9 +99,10 @@ async function main() {
 				}
 			} catch {}
 			const hostPid = findCodexHostPid();
-			let existing = mb.readNameMap(sessionId);
-			if (!existing && hostPid) existing = mb.findNameMapByAncestors(ancestorPids());
-			const name = existing?.alias || flags.name || process.env.MAILBOX_ALIAS ||
+			// same-session refire keeps the renamed alias; a NEW session_id
+			// never inherits by host pid (multi-session hosts, M0 finding)
+			const existing = mb.readNameMap(sessionId);
+			const name = flags.name || existing?.alias || process.env.MAILBOX_ALIAS ||
 				process.env.CODEX_SESSION_NAME || "codex";
 			const pid = flags.pid ? Number(flags.pid) : hostPid || process.pid;
 			const reg = mb.register({ name, kind: flags.kind || "external", pid });
@@ -210,38 +231,33 @@ async function main() {
 		case "rename": {
 			const to = pos[0];
 			if (!to) fail("rename requires: <new-alias>  (或 --as <当前别名> <新别名>)");
-			// Resolve current identity, in priority order:
-			//   1. --as <alias> (explicit, tests/scripts)
-			//   2. session-name map via CODEX_SESSION_ID env (codex exports it
-			//      to tool shells — reliable even inside the sandbox)
-			//   3. map via ancestor walk (hook-side fallback)
-			//   4. env alias chain
-			let from = flags.as || null;
-			let sessionId = null;
-			let hostPid = findCodexHostPid();
-			let found = mb.readNameMap(process.env.CODEX_SESSION_ID);
-			if (found) sessionId = process.env.CODEX_SESSION_ID;
-			if (!found) {
-				found = mb.findNameMapByAncestors(ancestorPids());
-				if (found) sessionId = found.sessionId;
-			}
-			if (found) {
-				hostPid = hostPid || found.hostPid;
-				if (!from) from = found.alias;
-			}
-			if (!from)
-				from = process.env.MAILBOX_ALIAS || process.env.CODEX_SESSION_NAME || null;
-			if (!from) fail("cannot determine current alias — 在 codex 会话内运行，或用 --as <当前别名>");
-			const r = mb.renameSession({ from, to, hostPid, sessionId });
-			process.stderr.write(`mailbox: renamed ${r.from} -> ${r.to} (未读消息跟随)\n`);
+			// Serialize per session (or per explicit --as) and RE-RESOLVE the
+			// identity inside the lock: a concurrent rename that lands first
+			// must be visible, otherwise the second migration loses history.
+			const sid = process.env.CODEX_SESSION_ID || null;
+			const lockName = sid ? `session-${sid}` : `session-as-${flags.as || "?"}`;
+			const r = await mb.withLock(lockName, () => {
+				let from = flags.as || null;
+				let sessionId = sid;
+				let hostPid = findCodexHostPid();
+				const found = sid ? mb.readNameMap(sid) : null;
+				if (found) {
+					hostPid = hostPid || found.hostPid;
+					if (!from) from = found.alias;
+				}
+				if (!from)
+					from = process.env.MAILBOX_ALIAS || process.env.CODEX_SESSION_NAME || null;
+				if (!from) fail("cannot determine current alias — 在 codex 会话内运行，或用 --as <当前别名>");
+				return mb.renameSession({ from, to, hostPid, sessionId });
+			});
+			if (r.noop) process.stderr.write(`mailbox: already named "${r.to}"\n`);
+			else process.stderr.write(`mailbox: renamed ${r.from} -> ${r.to} (未读消息跟随)\n`);
 			console.log(JSON.stringify(r));
 			break;
 		}
 		case "whoami": {
-			const found =
-				mb.readNameMap(process.env.CODEX_SESSION_ID) ||
-				mb.findNameMapByAncestors(ancestorPids());
-			console.log(JSON.stringify({ alias: found?.alias || alias }));
+			const id = resolveIdentity();
+			console.log(JSON.stringify({ alias: id.alias }));
 			break;
 		}
 		default:

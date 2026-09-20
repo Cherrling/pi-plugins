@@ -95,7 +95,7 @@ const srv = http.createServer((req, res) => {
 		if (text.includes("rename yourself") && !text.includes("RN-RENAMED")) {
 			output = tool({ cmd: `MAILBOX_DIR=${BOX} ${process.execPath} ${CLI} rename beta-worker && echo RN-RENAMED` });
 		} else if (text.includes("who are you") && !text.includes("RN-WHOAMI")) {
-			output = tool({ cmd: `MAILBOX_DIR=${BOX} ${process.execPath} ${CLI} whoami && echo RN-WHOAMI` });
+			output = tool({ cmd: `MAILBOX_DIR=${BOX} ${process.execPath} ${CLI} whoami && MAILBOX_DIR=${BOX} ${process.execPath} ${CLI} send alice "post-rename reply from the renamed session" && echo RN-WHOAMI` });
 		} else if (!hasToolResult) {
 			output = tool({ cmd: "echo rn-probe" });
 		} else {
@@ -252,7 +252,8 @@ try {
 		fail("old-registration-removed", "sessions/codex.json still present");
 	else pass("old-registration-removed");
 
-	// message to the NEW name + whoami turn
+	// message to the NEW name + whoami turn (alice must be addressable too)
+	cli(["register", "--kind", "pi", "--name", "alice"]);
 	cli(["send", "--as", "alice", "beta-worker", "msg B after rename"]);
 	await turn(threadId, "who are you");
 	const modelText2 = JSON.stringify(readReqs().map((r) => r.body.input));
@@ -262,6 +263,13 @@ try {
 	if (modelText2.includes('"alias":"beta-worker"') || modelText2.includes('\\"alias\\":\\"beta-worker\\"'))
 		pass("whoami-new-alias");
 	else fail("whoami-new-alias", "whoami result not found in model input");
+	// post-rename SEND must use the new identity (review R1)
+	const betaLog = fs.existsSync(path.join(BOX, "log-beta-worker.jsonl"))
+		? fs.readFileSync(path.join(BOX, "log-beta-worker.jsonl"), "utf8")
+		: "";
+	if (betaLog.includes('"from":"beta-worker"') && betaLog.includes("post-rename reply"))
+		pass("post-rename-send-identity");
+	else fail("post-rename-send-identity", `log-beta-worker: ${betaLog.slice(0, 200)}`);
 } catch (e) {
 	fail("scenario", String(e.message || e));
 } finally {

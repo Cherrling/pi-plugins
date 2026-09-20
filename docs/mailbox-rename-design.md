@@ -1,6 +1,6 @@
 # 交互式会话命名（mailbox rename）设计与实现
 
-> 状态：已实现并验证，待 review
+> 状态：v2 —— 首轮 review 提出 5 个 P1，全部修复并补回归（见 §9）
 > 需求来源：用户不希望用环境变量命名 codex 会话，要求交互式改名。
 > 本文供 codex review：§2 机制、§4 边界与已知取舍是重点审查对象。
 
@@ -115,10 +115,30 @@ node scripts/mailbox-m0/probe-rename.mjs
 已重跑 `install.mjs`（bridge 刷新 + AGENTS.md 片段更新，hooks 命令不变），
 真实 `~/.codex` 即时生效。
 
-## 8. Review 关注点建议
+## 8. 首轮 review 处置（5×P1，全部修复）
 
-1. `CODEX_SESSION_ID` env 依赖的版本耦合风险（§3.2）——兜底链是否足够？
-2. map 不清理的长期影响（§4 第 1 行）
-3. `/new` 身份连续是特性还是 bug（§4 第 3 行）
-4. 并发 rename 不加锁的取舍（§4 最后一行）
-5. renameSession 删除旧注册的条件（pid 死亡或等于宿主）是否有漏网场景
+| # | 问题 | 修复 |
+|---|---|---|
+| 1 | 改名后 send/inbox/report 仍用旧身份；渲染按旧别名查 kind，给 codex 注入 pi 工具指引 | CLI 统一 `resolveIdentity()`（`--as > map[CODEX_SESSION_ID] > env 链`），全部命令走同一解析；e2e 新增 post-rename-send-identity 断言（from=新名 + 渲染 kind 正确） |
+| 2 | 改成当前名字会删除自己的注册和水位线 | `renameSession` 对 `from === to` 早返回 noop；回归 r2（注册/state 完整、已读不重投） |
+| 3 | 同宿主新会话继承其他会话的名字（pid 推断身份连续性不成立） | register 彻底移除祖先兜底：新 session_id 只认 `--name`/env；同 sid 重触发（SessionStart refire）才保留改名。`/new` 后回到默认名——身份连续性不再由 pid 推断。回归 r3 |
+| 4 | 旧别名被新会话复用后，两个会话收到同一消息 | 投递时的历史别名过滤增加活性检查：旧名有**活**注册时历史不生效（新主人独收）；主人消失后历史恢复接住在途消息。回归 r4（含主人死亡后的恢复路径） |
+| 5 | 并发 rename 丢失历史别名（不止重复投递） | `withLock(session-<sid>)` 串行化 + **锁内重新解析身份**；第二个 rename 看到第一个的结果，链式迁移。回归 r5（并发双 rename，全链 history + 在途消息经链投递） |
+
+review 同时确认的语义澄清：**历史别名只接住在途消息**（改名前已写入日志的），不可用于**新发送**的寻址（未注册名报错，回归覆盖）。首版文档 §4 中"`/new` 身份连续是特性"的说法随 #3 修复作废。
+
+## 9. Review 关注点（第二轮）
+
+1. `CODEX_SESSION_ID` env 依赖的版本耦合风险（§3.2）——兜底链（`--as` 显式 + 报错提示）是否足够？
+2. map 文件不清理的长期影响（§4 第 1 行，未变）
+3. #4 的活性检查在投递时进行（非注册时清除历史）——竞争窗口内可能双投（两读者各收一次，id 去重各自独立），是否可接受？
+4. `withLock` 锁目录同样无清理（崩溃残留由 pid 抢占机制回收），与 state 锁一致
+
+## 10. 验证（v2）
+
+| 层 | 用例 | 结果 |
+|---|---|---|
+| test-rename.mjs | 原 5 用例 + r1 统一身份 / r2 同名 noop / r3 无跨会话继承 / r4 旧名复用隔离（含死亡恢复）/ r5 并发 rename 保历史（含死别名拒发） | 10/10 PASS |
+| probe-rename.mjs | 原 9 项 + post-rename-send-identity（改名后 send 的 from=新名） | 10/10 PASS |
+| 回归 | test-core / test-m1 / test-m2-install | ALL PASS |
+| 部署 | install.mjs 重跑（hooks 未变、AGENTS 刷新） | 完成 |

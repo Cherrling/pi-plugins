@@ -308,9 +308,21 @@ export class Mailbox {
 		const { msgs } = this.scanAll();
 		const key = (m) => `${m.from}:${m.id}`;
 		const aliases = new Set(state.aliases || []);
-		const pending = msgs.filter(
-			(m) => (m.to === reader || aliases.has(m.to)) && !seen.has(key(m)),
-		);
+		const pending = msgs.filter((m) => {
+			if (seen.has(key(m))) return false;
+			if (m.to === reader) return true;
+			if (!aliases.has(m.to)) return false;
+			// history applies only while the old name is not owned by a LIVE
+			// session — a re-registered old name belongs to its new owner
+			try {
+				const reg = JSON.parse(
+					fs.readFileSync(path.join(this.sessionsDir, `${m.to}.json`), "utf8"),
+				);
+				return !this.#pidAlive(reg.pid);
+			} catch {
+				return true; // not registered → history carries in-flight messages
+			}
+		});
 		const selected = pending.slice(0, limit);
 		if (selected.length > 0 && emit) {
 			await emit(selected, pending.length - selected.length);
@@ -486,6 +498,7 @@ export class Mailbox {
 	 */
 	renameSession({ from, to, hostPid, sessionId }) {
 		if (!ALIAS_RE.test(to)) throw new Error(`bad alias: ${to}`);
+		if (from === to) return { from, to, moved: false, noop: true }; // same-name rename: no-op
 		this.register({ name: to, kind: "external", pid: hostPid || process.pid });
 		const moved = this.renameReader(from, to);
 		const old = path.join(this.sessionsDir, `${from}.json`);
@@ -495,6 +508,16 @@ export class Mailbox {
 		} catch {}
 		if (sessionId) this.writeNameMap(sessionId, { alias: to, hostPid: hostPid ?? null });
 		return { from, to, moved };
+	}
+
+	/** Run fn under an exclusive named lock (session-scoped serialization). */
+	async withLock(name, fn) {
+		const release = await this.#acquireLock(name);
+		try {
+			return await fn();
+		} finally {
+			await release();
+		}
 	}
 
 	// ── codex session-name map (interactive rename) ───────────────
