@@ -248,9 +248,21 @@ try {
 			pass("new-registration", { pid: reg.pid, note: "live codex host pid" });
 		else fail("new-registration", `pid=${reg.pid} mapHost=${map.hostPid} alive=${hostAlive}`);
 	}
-	if (fs.existsSync(path.join(BOX, "sessions", "codex.json")))
-		fail("old-registration-removed", "sessions/codex.json still present");
-	else pass("old-registration-removed");
+	// old name released as a tombstone: present on disk (era boundary for the
+	// next taker) but NOT a live registration
+	const tombPath = path.join(BOX, "sessions", "codex.json");
+	let tombOk = false;
+	try {
+		const t = JSON.parse(fs.readFileSync(tombPath, "utf8"));
+		tombOk = t.released === true && t.pid === 0;
+	} catch {}
+	const listed = spawnSync(process.execPath, [CLI, "list"], {
+		env: { ...process.env, MAILBOX_DIR: BOX },
+		encoding: "utf8",
+	}).stdout;
+	if (tombOk && !listed.includes('"codex"'))
+		pass("old-registration-tombstoned", { note: "released on disk, hidden from list" });
+	else fail("old-registration-tombstoned", `tombOk=${tombOk} listed=${listed.slice(0, 200)}`);
 
 	// message to the NEW name + whoami turn (alice must be addressable too)
 	cli(["register", "--kind", "pi", "--name", "alice"]);

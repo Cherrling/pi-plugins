@@ -17,6 +17,7 @@ import { renderIncoming } from "../../shared/mailbox/protocol.mjs";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "..");
 const CLI = path.join(ROOT, "bridge", "mailbox-cli.mjs");
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
 function run(name, fn) {
 	const box = fs.mkdtempSync(path.join(os.tmpdir(), `rn-${name}-`));
@@ -85,8 +86,10 @@ await run("rename-session-carries-unread", async (box) => {
 	if (!r.moved) throw new Error("renameReader failed");
 	const map = mb.readNameMap(sid);
 	if (map.alias !== "beta") throw new Error("map not updated");
-	if (fs.existsSync(path.join(box, "sessions", "codex.json")))
-		throw new Error("old registration not removed (hostPid match)");
+	// old name released as a TOMBSTONE (era boundary for the next taker)
+	const tomb = JSON.parse(fs.readFileSync(path.join(box, "sessions", "codex.json"), "utf8"));
+	if (!tomb.released || tomb.pid !== 0) throw new Error(`bad tombstone: ${JSON.stringify(tomb)}`);
+	if (mb.listSessions().some((x) => x.name === "codex")) throw new Error("tombstone leaked into listSessions");
 	const reg = JSON.parse(fs.readFileSync(path.join(box, "sessions", "beta.json"), "utf8"));
 	if (reg.pid !== process.pid) throw new Error("new registration should carry host pid");
 	// unread still delivers under the NEW reader via alias history
@@ -126,7 +129,8 @@ await run("cli-rename-as", async (box) => {
 	cli(box, ["send", "--as", "alice", "old-name", "unread before cli rename"]);
 	const r = cli(box, ["rename", "--as", "old-name", "new-name"]);
 	if (r.status !== 0) throw new Error(r.stderr);
-	if (fs.existsSync(path.join(box, "sessions", "old-name.json"))) throw new Error("old registration left");
+	const tomb = JSON.parse(fs.readFileSync(path.join(box, "sessions", "old-name.json"), "utf8"));
+	if (!tomb.released) throw new Error(`old name not tombstoned: ${JSON.stringify(tomb)}`);
 	if (!fs.existsSync(path.join(box, "sessions", "new-name.json"))) throw new Error("new registration missing");
 	// unread follows
 	const out = cli(box, ["inbox", "--as", "new-name", "--limit", "5"]);
@@ -193,27 +197,38 @@ await run("r3-no-cross-session-inheritance", async (box) => {
 	if (m1.alias !== "alpha2") throw new Error(`refire lost renamed alias: ${m1.alias}`);
 });
 
-// R4: old-name reuse — live re-registration blocks alias-history delivery
+// R4 (era semantics): a reused old name's mail NEVER transfers to the
+// predecessor — not while the new owner lives, and NOT after its death either
 await run("r4-old-name-reuse-isolated", async (box) => {
-	const sid = "sid-r4";
-	cli(box, ["register", "--kind", "external", "--quiet"], {}, JSON.stringify({ session_id: sid }));
-	cli(box, ["rename", "--as", "codex", "audit"], { CODEX_SESSION_ID: sid });
+	const sidA = "sid-r4a";
+	cli(box, ["register", "--kind", "external", "--quiet"], {}, JSON.stringify({ session_id: sidA }));
 	cli(box, ["register", "--kind", "pi", "--name", "alice-is-me"], {}, null);
-	// a NEW live session takes the freed name "codex" (pid = this test process)
-	cli(box, ["register", "--kind", "external", "--name", "codex", "--pid", String(process.pid)], {}, null);
+	// A-era in-flight (sent BEFORE the rename) still delivers to audit
+	cli(box, ["send", "--as", "alice-is-me", "codex", "A-era in-flight"], { });
+	cli(box, ["rename", "--as", "codex", "audit"], { CODEX_SESSION_ID: sidA }); // era [T0,Tr]
+	let out = cli(box, ["inbox"], { CODEX_SESSION_ID: sidA });
+	if (!out.stdout.includes("A-era in-flight")) throw new Error("A-era in-flight lost");
+	await sleep(1100); // era boundary: second-granular — separate A's era from B's
+	// a NEW session takes the freed name
+	const sidB = "sid-r4b";
+	cli(box, ["register", "--kind", "external", "--quiet", "--name", "codex"], {}, JSON.stringify({ session_id: sidB }));
 	cli(box, ["send", "--as", "alice-is-me", "codex", "for the new codex"]);
-	// audit must NOT receive it (live owner exists)…
-	let out = cli(box, ["inbox"], { CODEX_SESSION_ID: sid });
-	if (out.stdout.includes("for the new codex")) throw new Error("renamed session stole the reused name's mail");
-	// …but the new codex does
-	const out2 = cli(box, ["inbox", "--as", "codex"]);
-	if (!out2.stdout.includes("for the new codex")) throw new Error("new owner did not receive");
-	// once the new owner is gone (dead pid), in-flight history delivers again
+	const outB = cli(box, ["inbox"], { CODEX_SESSION_ID: sidB });
+	if (!outB.stdout.includes("for the new codex")) throw new Error("new owner did not receive");
+	// audit must not see B-era mail — while B is alive…
+	out = cli(box, ["inbox"], { CODEX_SESSION_ID: sidA });
+	if (out.stdout.includes("for the new codex")) throw new Error("renamed session stole live owner's mail");
+	// …and after B's death too (owner death NEVER transfers era-scoped mail)
 	const reg = JSON.parse(fs.readFileSync(path.join(box, "sessions", "codex.json"), "utf8"));
 	fs.writeFileSync(path.join(box, "sessions", "codex.json"), JSON.stringify({ ...reg, pid: 999999 }));
-	cli(box, ["send", "--as", "alice-is-me", "codex", "late arrival"]);
-	out = cli(box, ["inbox"], { CODEX_SESSION_ID: sid });
-	if (!out.stdout.includes("late arrival")) throw new Error("history should carry after owner death");
+	fs.writeFileSync(
+		path.join(box, ".names", `${sidB}.json`),
+		JSON.stringify({ ...JSON.parse(fs.readFileSync(path.join(box, ".names", `${sidB}.json`), "utf8")), hostPid: 999999 }),
+	);
+	cli(box, ["send", "--as", "alice-is-me", "codex", "post-death for dead B"]);
+	out = cli(box, ["inbox"], { CODEX_SESSION_ID: sidA });
+	if (out.stdout.includes("for the new codex") || out.stdout.includes("post-death"))
+		throw new Error("owner death transferred B-era mail to the predecessor");
 });
 
 // R5: concurrent renames serialize; history is never lost
@@ -243,7 +258,7 @@ await run("r5-concurrent-rename-keeps-history", async (box) => {
 	if (!["mid", "right"].includes(finalMap.alias)) throw new Error(`final alias: ${finalMap.alias}`);
 	// history must contain the full chain incl. the first rename's result
 	const st = JSON.parse(fs.readFileSync(path.join(box, ".state", `${finalMap.alias}.json`), "utf8"));
-	const chain = new Set([...(st.aliases || []), finalMap.alias]);
+	const chain = new Set([...Object.keys(st.eras || {}), ...(st.aliases || []), finalMap.alias]);
 	for (const need of ["codex", "left", "mid", "right"])
 		if (!chain.has(need)) throw new Error(`history lost ${need}: ${JSON.stringify(st.aliases)}`);
 	// a historical alias renamed AWAY is no longer addressable by NEW sends
@@ -255,6 +270,108 @@ await run("r5-concurrent-rename-keeps-history", async (box) => {
 		throw new Error(
 			`in-flight mail not delivered through chain; state=${fs.readFileSync(path.join(box, ".state", `${finalMap.alias}.json`), "utf8").slice(0, 300)}`,
 		);
+});
+
+// R6 (review2 #1): B's already-consumed task is NOT re-delivered to A after
+// B exits — era bounds, not owner liveness, decide ownership of messages
+await run("r6-no-transfer-on-owner-death", async (box) => {
+	const sidA = "sid-r6a";
+	cli(box, ["register", "--kind", "external", "--quiet"], {}, JSON.stringify({ session_id: sidA }));
+	cli(box, ["register", "--kind", "pi", "--name", "alice-is-me"], {}, null);
+	cli(box, ["rename", "--as", "codex", "audit"], { CODEX_SESSION_ID: sidA });
+	await sleep(1100); // era boundary separation
+	const sidB = "sid-r6b";
+	cli(box, ["register", "--kind", "external", "--quiet", "--name", "codex"], {}, JSON.stringify({ session_id: sidB }));
+	cli(box, ["dispatch", "--as", "alice-is-me", "codex", "task for B"]);
+	// B consumes the task
+	let outB = cli(box, ["inbox"], { CODEX_SESSION_ID: sidB });
+	if (!outB.stdout.includes("task for B")) throw new Error("B did not receive its task");
+	// B exits (registration + map dead)
+	const reg = JSON.parse(fs.readFileSync(path.join(box, "sessions", "codex.json"), "utf8"));
+	fs.writeFileSync(path.join(box, "sessions", "codex.json"), JSON.stringify({ ...reg, pid: 999999 }));
+	fs.writeFileSync(
+		path.join(box, ".names", `${sidB}.json`),
+		JSON.stringify({ ...JSON.parse(fs.readFileSync(path.join(box, ".names", `${sidB}.json`), "utf8")), hostPid: 999999 }),
+	);
+	// A scans: must NOT receive B's consumed task (deterministic, not a race)
+	const outA = cli(box, ["inbox"], { CODEX_SESSION_ID: sidA });
+	if (outA.stdout.includes("task for B")) throw new Error("B's consumed task re-delivered to A");
+});
+
+// R7 (review2 #2): same-host sessions cannot steal each other's names
+await run("r7-no-cross-session-name-steal", async (box) => {
+	const sidA = "sid-r7a";
+	const sidB = "sid-r7b";
+	// session A named alpha, map hostPid = THIS live test process
+	cli(box, ["register", "--kind", "external", "--quiet", "--name", "alpha"], {}, JSON.stringify({ session_id: sidA }));
+	cli(box, ["register", "--kind", "external", "--quiet", "--name", "beta"], {}, JSON.stringify({ session_id: sidB }));
+	// simulate live codex hosts for both sessions (test env has none)
+	for (const sid of [sidA, sidB]) {
+		const mp = path.join(box, ".names", `${sid}.json`);
+		fs.writeFileSync(mp, JSON.stringify({ ...JSON.parse(fs.readFileSync(mp, "utf8")), hostPid: process.pid }));
+	}
+	const bad = cli(box, ["rename", "alpha"], { CODEX_SESSION_ID: sidB });
+	if (bad.status === 0) throw new Error("session B stole session A's name via rename");
+	// and direct register --name alpha from session B also fails
+	const bad2 = cli(box, ["register", "--kind", "external", "--name", "alpha"], {}, JSON.stringify({ session_id: sidB }));
+	if (bad2.status === 0) throw new Error("session B stole session A's name via register");
+	// maps unchanged: A still alpha, B still beta
+	const mA = JSON.parse(fs.readFileSync(path.join(box, ".names", `${sidA}.json`), "utf8"));
+	const mB = JSON.parse(fs.readFileSync(path.join(box, ".names", `${sidB}.json`), "utf8"));
+	if (mA.alias !== "alpha" || mB.alias !== "beta")
+		throw new Error(`maps corrupted: ${JSON.stringify([mA, mB])}`);
+	// same-session refire stays idempotent
+	cli(box, ["register", "--kind", "external", "--quiet"], {}, JSON.stringify({ session_id: sidA }));
+	const mA2 = JSON.parse(fs.readFileSync(path.join(box, ".names", `${sidA}.json`), "utf8"));
+	if (mA2.alias !== "alpha") throw new Error("idempotent refire broke the map");
+});
+
+// R8 (review2 #3): B-era in-flight follows B's rename with NO new log writes —
+// cache cannot hide it; and it never leaks to A
+await run("r8-era-follows-rename-no-cache-dependency", async (box) => {
+	const sidA = "sid-r8a";
+	cli(box, ["register", "--kind", "external", "--quiet"], {}, JSON.stringify({ session_id: sidA }));
+	cli(box, ["register", "--kind", "pi", "--name", "alice-is-me"], {}, null);
+	cli(box, ["rename", "--as", "codex", "audit"], { CODEX_SESSION_ID: sidA });
+	await sleep(1100); // era boundary separation
+	const sidB = "sid-r8b";
+	cli(box, ["register", "--kind", "external", "--quiet", "--name", "codex"], {}, JSON.stringify({ session_id: sidB }));
+	// prime A's cache with an empty scan
+	let outA = cli(box, ["inbox"], { CODEX_SESSION_ID: sidA });
+	// B-era message arrives
+	cli(box, ["send", "--as", "alice-is-me", "codex", "B-era in-flight"]);
+	// B renames away — NO further log writes happen afterwards
+	cli(box, ["rename", "carol"], { CODEX_SESSION_ID: sidB });
+	// A (whose cache matches: same logs) must not get B-era mail
+	outA = cli(box, ["inbox"], { CODEX_SESSION_ID: sidA });
+	if (outA.stdout.includes("B-era in-flight")) throw new Error("B-era mail leaked to A");
+	// carol receives it through her own era — without any new log writes
+	const outC = cli(box, ["inbox"], { CODEX_SESSION_ID: sidB });
+	if (!outC.stdout.includes("B-era in-flight")) throw new Error("era handover lost B's in-flight mail");
+});
+
+// R9 (review2 #4): stdin-only identity (no CODEX_SESSION_ID env) renders the
+// map reader's capability, not the env fallback's
+await run("r9-stdin-identity-render", async (box) => {
+	const sid = "sid-r9";
+	cli(box, ["register", "--kind", "external", "--quiet"], {}, JSON.stringify({ session_id: sid }));
+	cli(box, ["rename", "--as", "codex", "beta"], { CODEX_SESSION_ID: sid });
+	cli(box, ["register", "--kind", "pi", "--name", "alice-is-me"], {}, null);
+	cli(box, ["send", "--as", "alice-is-me", "beta", "render check"]);
+	// NO CODEX_SESSION_ID in env — identity comes from stdin session_id only
+	const r = cli(
+		box,
+		["check", "--mode", "posttooluse"],
+		{ MAILBOX_ALIAS: "" }, // ensure env chain does NOT know the map alias
+		JSON.stringify({ session_id: sid, turn_id: "t1" }),
+	);
+	if (r.status !== 0) throw new Error(r.stderr);
+	const out = JSON.parse(r.stdout);
+	const ctx = out.hookSpecificOutput?.additionalContext ?? "";
+	if (!ctx.includes("render check")) throw new Error("message not delivered via stdin identity");
+	if (ctx.includes("report_task_result") || ctx.includes("send_session_message"))
+		throw new Error(`pi-tool guidance rendered for an external reader: ${ctx.slice(0, 200)}`);
+	if (!ctx.includes("mailbox")) throw new Error("expected CLI guidance for external reader");
 });
 
 const failed = results.filter((r) => r.status === "fail").length;

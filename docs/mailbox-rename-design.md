@@ -1,6 +1,6 @@
 # 交互式会话命名（mailbox rename）设计与实现
 
-> 状态：v2 —— 首轮 review 提出 5 个 P1，全部修复并补回归（见 §9）
+> 状态：v3 —— 两轮 review 收敛：首轮 5×P1（§8），次轮 2×P1+2×P2（§8b，era 模型重构）
 > 需求来源：用户不希望用环境变量命名 codex 会话，要求交互式改名。
 > 本文供 codex review：§2 机制、§4 边界与已知取舍是重点审查对象。
 
@@ -127,7 +127,39 @@ node scripts/mailbox-m0/probe-rename.mjs
 
 review 同时确认的语义澄清：**历史别名只接住在途消息**（改名前已写入日志的），不可用于**新发送**的寻址（未注册名报错，回归覆盖）。首版文档 §4 中"`/new` 身份连续是特性"的说法随 #3 修复作废。
 
-## 9. Review 关注点（第二轮）
+## 8b. 次轮 review 处置（2×P1 + 2×P2 → era 模型重构）
+
+次轮两个 P1 指出上一版"按主人存活路由历史消息"的模型性错误：消息属于
+**发送时拥有该名字的那任**，与主人后来死活无关。重构为**别名归属区间（era）**：
+
+```
+state.eras = { <旧名>: { since, until } }   // 本读者对该名的归属区间（秒粒度闭区间）
+投递资格 = to === 当前名（且 ts ≥ 注册 since，owner 型注册）
+        ∨ to ∈ eras 且 since ≤ ts ≤ until
+```
+
+| # | 问题 | 修复 |
+|---|---|---|
+| 1 (P1) | 旧名新主人退出后，其消息确定性误投给前任 | era 边界随 rename 固化在读者状态里，投递不查任何注册存活。回归 r6：B 消费过的任务在 B 退出后不再投给 A |
+| 2 (P1) | 同宿主不同会话经 pid 相同判定可互抢名字 | 注册归属键从 pid 改为 session id（`owner`）：同 owner 幂等（保留 since），异 owner 且存活（经 map 的 hostPid 判定）一律冲突。回归 r7：同宿主 sid-b 的 rename/register 到 alpha 均失败 |
+| 3 (P2) | 主人死亡不失效扫描缓存，"历史恢复"可能永不发生 | era 是读者状态的纯函数（消息 ts × 区间），与注册变化无关 → mtime 短路不可能遮蔽任何资格变化。回归 r8：B-era 在途消息随 B 改名转移、无新日志写入也送达，且不泄漏给 A |
+| 4 (P2) | stdin 提供身份时渲染给 pi 工具指引 | check 命令一次性解析最终读者（stdin session_id → map 优先于 env），投递与渲染同源。回归 r9：无 CODEX_SESSION_ID env、仅 stdin 时按 external 渲染 |
+
+**era 模型的配套机制**：
+- **墓碑**：rename 释放旧名时写 `released:true, pid:0` 的墓碑（不删除）——下一任
+  takeover 时 `since=now`（而不是 0），era 边界跨交接保持。墓碑对
+  listSessions/resolveTarget 不可见（名字不可寻址直到被重新注册）
+- **owner 型注册的 direct 界**：codex 会话（有 owner）的当前名直收也按注册
+  `since` 设界——新主人不会直收前任 era 的未读。pi/手动注册（无 owner）保持
+  无界，避免 pi /new 回归
+- **1 秒歧义窗口**：消息 ts 秒粒度，rename+换主+发送发生在同一秒时区间重叠
+  （双投，id 去重各自独立）。测试在 era 边界间 sleep 1.1s 隔离；真实使用中
+  人速改名不会触发，已记录为已知边界
+
+**测试**：test-rename 14 用例（原 5 + 首轮 r1-r5 + 次轮 r6-r9）；e2e 10 项
+（`old-registration-removed` 更新为 `old-registration-tombstoned`）。
+
+## 9. Review 关注点（第三轮）
 
 1. `CODEX_SESSION_ID` env 依赖的版本耦合风险（§3.2）——兜底链（`--as` 显式 + 报错提示）是否足够？
 2. map 文件不清理的长期影响（§4 第 1 行，未变）

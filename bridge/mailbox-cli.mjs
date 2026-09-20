@@ -105,7 +105,7 @@ async function main() {
 			const name = flags.name || existing?.alias || process.env.MAILBOX_ALIAS ||
 				process.env.CODEX_SESSION_NAME || "codex";
 			const pid = flags.pid ? Number(flags.pid) : hostPid || process.pid;
-			const reg = mb.register({ name, kind: flags.kind || "external", pid });
+			const reg = mb.register({ name, kind: flags.kind || "external", pid, owner: sessionId });
 			if (sessionId) mb.writeNameMap(sessionId, { alias: name, hostPid });
 			// hooks parse stdout as hook-output JSON — keep it empty unless asked
 			if (flags.quiet) process.stderr.write(`mailbox: registered ${reg.name}\n`);
@@ -208,7 +208,14 @@ async function main() {
 			try {
 				stdin = fs.readFileSync(0, "utf8");
 			} catch {} // closed stdin → fail-open inside checkHook
-			const me = requireAlias();
+			// resolve the FINAL reader once (stdin session_id → map beats env)
+			// and use it for BOTH delivery and render — a map-renamed reader
+			// must get its own capability's guidance, not the env fallback's
+			let sid = null;
+			try {
+				sid = JSON.parse(stdin)?.session_id ?? null;
+			} catch {}
+			const me = (sid ? mb.readNameMap(sid)?.alias : undefined) || requireAlias();
 			const out = await mb.checkHook(
 				mode,
 				stdin,

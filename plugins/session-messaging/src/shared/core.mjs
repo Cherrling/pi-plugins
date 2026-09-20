@@ -310,21 +310,31 @@ export class Mailbox {
 		if (shortcut) return { messages: [], remaining: 0, shortcut: true };
 		const { msgs } = this.scanAll();
 		const key = (m) => `${m.from}:${m.id}`;
-		const aliases = new Set(state.aliases || []);
+		// Era-bounded alias history: a historical name delivers ONLY the
+		// messages sent while THIS reader owned it. Eligibility is a pure
+		// function of reader state + message ts — registration liveness is
+		// never consulted, so the mtime shortcut cannot hide anything.
+		// Bounds are SECOND-granular closed intervals (message ts is
+		// second-granular); a rename + retake within the same second is an
+		// accepted 1s ambiguity window (documented).
+		const eras =
+			state.eras ??
+			Object.fromEntries((state.aliases || []).map((n) => [n, { since: 0, until: Infinity }])); // legacy
+		// Owner-keyed readers (codex sessions) also bound their DIRECT match
+		// by the registration era: a name taker must not receive the previous
+		// owner's unread mail. Pi/manual registrations (no owner) stay
+		// unbounded — pi has no cross-session name takeover.
+		let directSince = null;
+		try {
+			const reg = JSON.parse(fs.readFileSync(path.join(this.sessionsDir, `${reader}.json`), "utf8"));
+			if (!reg.released && reg.owner != null) directSince = Math.floor((reg.since ?? 0) / 1000);
+		} catch {}
 		const pending = msgs.filter((m) => {
 			if (seen.has(key(m))) return false;
-			if (m.to === reader) return true;
-			if (!aliases.has(m.to)) return false;
-			// history applies only while the old name is not owned by a LIVE
-			// session — a re-registered old name belongs to its new owner
-			try {
-				const reg = JSON.parse(
-					fs.readFileSync(path.join(this.sessionsDir, `${m.to}.json`), "utf8"),
-				);
-				return !this.#pidAlive(reg.pid);
-			} catch {
-				return true; // not registered → history carries in-flight messages
-			}
+			if (m.to === reader) return directSince == null || m.ts >= directSince;
+			const era = eras[m.to];
+			if (!era) return false;
+			return m.ts >= Math.floor(era.since / 1000) && m.ts <= Math.floor(era.until / 1000);
 		});
 		const selected = pending.slice(0, limit);
 		if (selected.length > 0 && emit) {
@@ -420,21 +430,43 @@ export class Mailbox {
 
 	// ── registry (display + best-effort liveness; NO auto-cleanup) ─
 
-	/** Register under an alias. `extra` fields (sessionFile, state,
-	 *  busyTaskId…) are stored as-is for display/peek; unknown to the core. */
-	register({ name, kind = "external", pid = process.pid, cwd = process.cwd(), ...extra }) {
+	/**
+	 * Register under an alias. Ownership is keyed by SESSION identity
+	 * (`owner`, e.g. codex session_id), not pid — one codex host runs many
+	 * sessions. Same owner re-registers idempotently (era `since` preserved);
+	 * a different live owner is a conflict; a dead owner may be taken over
+	 * (new era starts). `extra` fields are stored as-is.
+	 *
+	 * `since` (epoch ms) starts the ownership era: 0 for a fresh name,
+	 * now for a takeover. It bounds alias-history delivery after renames.
+	 */
+	register({ name, kind = "external", pid = process.pid, cwd = process.cwd(), owner = null, ...extra }) {
 		if (!ALIAS_RE.test(name)) throw new Error(`bad alias: ${name}`);
 		const p = path.join(this.sessionsDir, `${name}.json`);
+		let since = 0;
 		if (fs.existsSync(p)) {
 			const prev = JSON.parse(fs.readFileSync(p, "utf8"));
-			if (prev.pid !== pid && this.#pidAlive(prev.pid))
+			const sameOwner = owner != null && prev.owner === owner;
+			if (!sameOwner && this.#sessionAlive(prev))
 				throw new Error(
-					`alias "${name}" is held by live pid ${prev.pid} (aliases must be unique)`,
+					`alias "${name}" is held by another session (owner=${prev.owner ?? "?"}, pid=${prev.pid})`,
 				);
+			since = sameOwner ? (prev.since ?? 0) : Date.now(); // takeover starts a new era
 		}
-		const reg = { name, kind, pid, cwd, startedAt: Date.now(), ...extra };
+		const reg = { name, kind, pid, cwd, owner, since, startedAt: Date.now(), ...extra };
 		fs.writeFileSync(p, JSON.stringify(reg, null, 2));
 		return reg;
+	}
+
+	/** Is the session owning this registration still alive? Owner sessions
+	 *  are located via the name map (host pid); manual/pi registrations
+	 *  fall back to the recorded pid. */
+	#sessionAlive(reg) {
+		if (reg.owner) {
+			const m = this.readNameMap(reg.owner);
+			if (m?.hostPid) return this.#pidAlive(m.hostPid);
+		}
+		return this.#pidAlive(reg.pid);
 	}
 
 	/** Read-modify-write a registration (rename-safe: same alias file). */
@@ -472,19 +504,35 @@ export class Mailbox {
 		return removed;
 	}
 
-	/** Rename a reader: move the state bundle so the watermark survives,
-	 *  AND record the old alias so in-flight messages addressed to it still
-	 *  deliver (the log is append-only — `to` fields are never rewritten). */
-	renameReader(oldName, newName) {
+	/**
+	 * Rename a reader: move the state bundle so the watermark survives, AND
+	 * record the old alias's ownership ERA [since, until) so that in-flight
+	 * messages addressed to it still deliver — but ONLY the ones sent while
+	 * THIS reader owned the name (append-only: `to` fields are immutable).
+	 * Era-bounded history never consults registration liveness: a message
+	 * belongs to whoever owned the name at send time, full stop.
+	 */
+	renameReader(oldName, newName, era = null) {
+		const entry = era ?? { since: 0, until: Date.now() };
 		const from = this.statePath(oldName);
 		if (!fs.existsSync(from)) {
-			// no state yet: still seed alias history at the new path
-			this.#commitState(newName, { seen: [], backlog: true, cache: null, block: {}, aliases: [oldName] });
+			this.#commitState(newName, {
+				seen: [],
+				backlog: true,
+				cache: null,
+				block: {},
+				eras: { [oldName]: entry },
+			});
 			return true;
 		}
 		try {
 			const st = this.#readState(oldName);
-			st.aliases = [...new Set([...(st.aliases || []), oldName])];
+			const eras = st.eras ?? Object.fromEntries(
+				(st.aliases || []).map((n) => [n, { since: 0, until: Infinity }]), // legacy
+			);
+			eras[oldName] = entry;
+			st.eras = eras;
+			delete st.aliases;
 			this.#commitState(newName, st);
 			fs.unlinkSync(from);
 			return true;
@@ -502,12 +550,36 @@ export class Mailbox {
 	renameSession({ from, to, hostPid, sessionId }) {
 		if (!ALIAS_RE.test(to)) throw new Error(`bad alias: ${to}`);
 		if (from === to) return { from, to, moved: false, noop: true }; // same-name rename: no-op
-		this.register({ name: to, kind: "external", pid: hostPid || process.pid });
-		const moved = this.renameReader(from, to);
+		// capture the era of `from` BEFORE re-registering: it starts when this
+		// session took the name (its registration `since`) and ends now
+		let since = 0;
+		try {
+			const oldReg = JSON.parse(fs.readFileSync(path.join(this.sessionsDir, `${from}.json`), "utf8"));
+			since = oldReg.since ?? 0;
+		} catch {}
+		const until = Date.now();
+		this.register({ name: to, kind: "external", pid: hostPid || process.pid, owner: sessionId ?? null });
+		const moved = this.renameReader(from, to, { since, until });
+		// Release the old name as a TOMBSTONE (not unlink): the next taker's
+		// registration stamps a fresh `since`, so the era boundary survives
+		// the handover instead of resetting to 0.
 		const old = path.join(this.sessionsDir, `${from}.json`);
 		try {
 			const reg = JSON.parse(fs.readFileSync(old, "utf8"));
-			if (!this.#pidAlive(reg.pid) || reg.pid === hostPid) fs.unlinkSync(old);
+			if (reg.owner === (sessionId ?? null) || !this.#sessionAlive(reg)) {
+				fs.writeFileSync(
+					old,
+					JSON.stringify({
+						name: from,
+						kind: reg.kind ?? "external",
+						owner: null,
+						pid: 0,
+						since: reg.since ?? 0,
+						endedAt: until,
+						released: true,
+					}),
+				);
+			}
 		} catch {}
 		if (sessionId) this.writeNameMap(sessionId, { alias: to, hostPid: hostPid ?? null });
 		return { from, to, moved };
@@ -583,7 +655,8 @@ export class Mailbox {
 		const names = fs
 			.readdirSync(this.sessionsDir)
 			.filter((f) => f.endsWith(".json"))
-			.map((f) => f.slice(0, -5));
+			.map((f) => f.slice(0, -5))
+			.filter((n) => !this.#isReleased(n));
 		const exact = names.filter((n) => n === query);
 		if (exact.length === 1) return exact[0];
 		const prefix = names.filter((n) => n.startsWith(query));
@@ -599,6 +672,7 @@ export class Mailbox {
 			if (!f.endsWith(".json")) continue;
 			try {
 				const reg = JSON.parse(fs.readFileSync(path.join(this.sessionsDir, f), "utf8"));
+				if (reg.released) continue; // rename tombstone, not a session
 				out.push({
 					...reg,
 					alive: this.#pidAlive(reg.pid),
@@ -607,5 +681,13 @@ export class Mailbox {
 			} catch {}
 		}
 		return out;
+	}
+
+	#isReleased(name) {
+		try {
+			return !!JSON.parse(fs.readFileSync(path.join(this.sessionsDir, `${name}.json`), "utf8")).released;
+		} catch {
+			return false;
+		}
 	}
 }
