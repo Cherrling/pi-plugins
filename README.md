@@ -49,7 +49,8 @@ cp plugins/status-bar/status-bar.ts ~/.pi/agent/extensions/
 |---|---|
 | 本机 `~/.pi/agent/settings.json` | ✅ 2026-10-02 落地（pi 1.0.0） |
 | ai `/root/.pi/agent/settings.json` | ✅ 同一日同步；备份 `settings.json.bak-before-tui-fullscreen`（pi 1.0.0） |
-| cpudev `/home/wsz/.pi/agent/settings.json` | 待同步 |
+| kernel `/root/.pi/agent/settings.json` | ✅ 2026-10-02 同步（pi 0.86.1 → 1.0.0 升级后） |
+| cpudev `/home/wsz/.pi/agent/settings.json` | 待同步（0.85.1，需先升级） |
 
 ## 约定
 
