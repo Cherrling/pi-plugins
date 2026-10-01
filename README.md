@@ -41,7 +41,15 @@ cp plugins/status-bar/status-bar.ts ~/.pi/agent/extensions/
 - `tuiMode`: `"regular"` → **`"fullscreen"`**。全屏 TUI，滚轮/回滚走 pi 自己的 transcript 视口，而不是把内容推进终端 scrollback。重启 pi 生效。
 - `fullscreenWheelScrollLines`: 新增，`"auto"` → **`10`**（合法范围 1–100）。默认 `"auto"` 在 SSH/非 macOS 终端下最多 6 行/格，滚起来偏慢；固定 10 行更跟手。Alt+滚轮是这个值的 5 倍（即 50 行/格）。
 
-其余设置保持 pi 默认（`fullscreenScrollbar: "auto"`、`hideThinkingBlock: false`）。上面两项目前只在本机 `~/.pi/agent/settings.json` 落地；cpudev、ai 需要时按此同步。
+其余设置保持 pi 默认（`fullscreenScrollbar: "auto"`、`hideThinkingBlock: false`）。
+
+部署状态（用 md5sum/远端读回核实）：
+
+| 机器 | 状态 |
+|---|---|
+| 本机 `~/.pi/agent/settings.json` | ✅ 2026-10-02 落地（pi 1.0.0） |
+| ai `/root/.pi/agent/settings.json` | ✅ 同一日同步；备份 `settings.json.bak-before-tui-fullscreen`（pi 1.0.0） |
+| cpudev `/home/wsz/.pi/agent/settings.json` | 待同步 |
 
 ## 约定
 
